@@ -1,0 +1,47 @@
+{
+  "id": "1",
+  "name": "Demo User",
+  "email": "demo@example.com",
+  "avatar": "",
+  "followers": 12,
+  "following": 8,
+  "isVerified": true,
+  "tier": "business",
+  "addons": {
+    "verified": true
+  },
+  "mode": "professional",
+  "professional": {
+    "headline": "",
+    "bio": "",
+    "location": "",
+    "skills": [
+      "music, plumber",
+      "grresd"
+    ],
+    "experience": [
+      {
+        "role": "CEO",
+        "company": "Kompe",
+        "start": "2001",
+        "end": "2010",
+        "verified": false
+      }
+    ],
+    "education": [
+      {
+        "institution": "Havert",
+        "degree": "Degree",
+        "field": "Computer Science",
+        "start": "1998",
+        "end": "2001",
+        "verified": true
+      }
+    ],
+    "links": [],
+    "endorsements": {},
+    "openToCollab": true,
+    "collabNote": "",
+    "resumeSummary": "Key skills: music, plumber"
+  }
+}
