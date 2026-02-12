@@ -281,21 +281,25 @@ io.on('connection', (socket) => {
 const PORT = process.env.PORT || 4000;
 
 // Connect MongoDB (for JournalEntry and any other Mongoose models)
-const MONGO_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/facemex';
-(async () => {
-  try {
-    await mongoose.connect(MONGO_URI, {
-      serverSelectionTimeoutMS: 5000,
-    });
-    console.log('✅ MongoDB connected');
-  } catch (err) {
-    console.error('❌ MongoDB connection failed:', err.message || err);
-    console.log('⚠️  Server will still run, but journal persistence may not work');
-  }
-})();
+const MONGO_URI = process.env.MONGODB_URI;
+if (MONGO_URI) {
+  (async () => {
+    try {
+      await mongoose.connect(MONGO_URI, {
+        serverSelectionTimeoutMS: 5000,
+      });
+      console.log('✅ MongoDB connected');
+    } catch (err) {
+      console.error('❌ MongoDB connection failed:', err.message || err);
+      console.log('⚠️  Server will still run, but journal persistence may not work');
+    }
+  })();
+} else {
+  console.log('⚠️  MONGODB_URI is not set; skipping MongoDB connection');
+}
 
 server.listen(PORT, async () => {
-  console.log(`API listening on http://localhost:${PORT}`);
+  console.log(`API listening on port ${PORT}`);
   
   // Initialize AI in the background
   try {
