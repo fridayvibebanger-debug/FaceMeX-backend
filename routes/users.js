@@ -3,6 +3,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { connectDb } from '../lib/db.js';
 import { User } from '../models/User.js';
 import { loadJSON, saveJSON } from '../utils/jsonStore.js';
+import { createNotification } from '../utils/notify.js';
 
 const router = Router();
 
@@ -97,21 +98,15 @@ router.post('/me/endorse', requireAuth, async (req, res) => {
   await User.findByIdAndUpdate(id, { professional: nextProfessional });
   // persist and emit notification
   try {
-    const data = (await loadJSON('notifications.json', { notifications: [] })) || { notifications: [] };
-    const list = Array.isArray(data.notifications) ? data.notifications : [];
-    const note = {
-      id: String(Date.now()),
+    createNotification(req, {
+      toUserId: id,
+      fromUserId: id,
       type: 'endorsement',
       title: 'New endorsement',
       message: `Your skill ${skill} was endorsed`,
-      isRead: false,
-      timestamp: Date.now(),
       actionUrl: '/profile',
-    };
-    list.unshift(note);
-    await saveJSON('notifications.json', { notifications: list });
-    const io = req.app.get('io');
-    if (io) io.emit('notify', note);
+      meta: { skill },
+    }).catch(() => {});
   } catch {}
   res.json({ endorsements });
 });

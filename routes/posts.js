@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { loadJSON, saveJSON } from '../utils/jsonStore.js';
 import { initSqlite, dbReady, postsRepo } from '../utils/sqlite.js';
 import { requireAuth } from '../middleware/auth.js';
+import { createNotification } from '../utils/notify.js';
 
 const router = Router();
 
@@ -100,16 +101,50 @@ router.post('/', requireAuth, (req, res) => {
 router.post('/:id/like', requireAuth, (req, res) => {
   const { id } = req.params;
   const userId = String(req.user?._id || req.user?.id || '');
+  const userName = String(req.user?.name || 'Someone');
   if (dbReady) {
     const updated = postsRepo.toggleLike(id, userId);
     if (!updated) return res.status(404).json({ error: 'Not found' });
+    try {
+      const likedNow = Array.isArray(updated.likedBy) && updated.likedBy.includes(userId);
+      const ownerId = String(updated.userId || '');
+      if (likedNow && ownerId && ownerId !== userId) {
+        createNotification(req, {
+          toUserId: ownerId,
+          fromUserId: userId,
+          type: 'like',
+          title: 'New Reaction',
+          message: `${userName} reacted to your post`,
+          actionUrl: '/feed',
+          meta: { postId: id },
+        }).catch(() => {});
+      }
+    } catch {}
     return res.json(updated);
   }
   const p = posts.find((x) => x.id === id);
   if (!p) return res.status(404).json({ error: 'Not found' });
   if (!Array.isArray(p.likedBy)) p.likedBy = [];
   const idx = p.likedBy.indexOf(userId);
-  if (idx === -1) p.likedBy.push(userId); else p.likedBy.splice(idx, 1);
+  if (idx === -1) {
+    p.likedBy.push(userId);
+    try {
+      const ownerId = String(p.userId || '');
+      if (ownerId && ownerId !== userId) {
+        createNotification(req, {
+          toUserId: ownerId,
+          fromUserId: userId,
+          type: 'like',
+          title: 'New Reaction',
+          message: `${userName} reacted to your post`,
+          actionUrl: '/feed',
+          meta: { postId: id },
+        }).catch(() => {});
+      }
+    } catch {}
+  } else {
+    p.likedBy.splice(idx, 1);
+  }
   saveJSON('posts.json', posts).catch(() => {});
   res.json({ ...p, likes: p.likedBy.length });
 });
@@ -122,12 +157,41 @@ router.post('/:id/comment', requireAuth, (req, res) => {
   if (dbReady) {
     const c = postsRepo.addComment(id, { id: `c${Date.now()}`, userId, userName, text: text || '' });
     if (!c) return res.status(404).json({ error: 'Not found' });
+    try {
+      const p = postsRepo.get(id);
+      const ownerId = String(p?.userId || '');
+      if (ownerId && ownerId !== userId) {
+        createNotification(req, {
+          toUserId: ownerId,
+          fromUserId: userId,
+          type: 'comment',
+          title: 'New Comment',
+          message: `${userName || 'Someone'} commented on your post`,
+          actionUrl: '/feed',
+          meta: { postId: id, commentId: c.id },
+        }).catch(() => {});
+      }
+    } catch {}
     return res.status(201).json(c);
   }
   const p = posts.find((x) => x.id === id);
   if (!p) return res.status(404).json({ error: 'Not found' });
   const c = { id: `c${Date.now()}`, userId, userName, text: text || '', createdAt: new Date().toISOString() };
   p.comments.push(c);
+  try {
+    const ownerId = String(p.userId || '');
+    if (ownerId && ownerId !== userId) {
+      createNotification(req, {
+        toUserId: ownerId,
+        fromUserId: userId,
+        type: 'comment',
+        title: 'New Comment',
+        message: `${userName || 'Someone'} commented on your post`,
+        actionUrl: '/feed',
+        meta: { postId: id, commentId: c.id },
+      }).catch(() => {});
+    }
+  } catch {}
   saveJSON('posts.json', posts).catch(() => {});
   res.status(201).json(c);
 });
