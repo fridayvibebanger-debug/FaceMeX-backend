@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { loadJSON, saveJSON } from '../utils/jsonStore.js';
 import { initSqlite, dbReady, postsRepo } from '../utils/sqlite.js';
+import { requireAuth } from '../middleware/auth.js';
 
 const router = Router();
 
@@ -54,17 +55,21 @@ router.get('/', (req, res) => {
   res.json(filtered);
 });
 
-router.post('/', (req, res) => {
+router.post('/', requireAuth, (req, res) => {
   const { content, image, images, audio, mode } = req.body;
   const safeImages = Array.isArray(images) ? images.filter(Boolean).slice(0, 5) : [];
   const firstImage = (safeImages[0] || image || '');
   const id = `p${Date.now()}`;
+  const currentUserId = String(req.user?._id || req.user?.id || '');
+  const currentUserName = String(req.user?.name || '');
+  const currentUserAvatar = String(req.user?.avatar || '');
+
   if (dbReady) {
     const created = postsRepo.create({
       id,
-      userId: '1',
-      userName: 'Demo User',
-      avatar: '',
+      userId: currentUserId,
+      userName: currentUserName,
+      avatar: currentUserAvatar,
       content: content || '',
       image: firstImage || '',
       images: safeImages,
@@ -75,9 +80,9 @@ router.post('/', (req, res) => {
   }
   const post = {
     id,
-    userId: '1',
-    userName: 'Demo User',
-    avatar: '',
+    userId: currentUserId,
+    userName: currentUserName,
+    avatar: currentUserAvatar,
     content: content || '',
     image: firstImage || '',
     images: safeImages,
@@ -92,9 +97,9 @@ router.post('/', (req, res) => {
   res.status(201).json({ ...post, likes: 0 });
 });
 
-router.post('/:id/like', (req, res) => {
+router.post('/:id/like', requireAuth, (req, res) => {
   const { id } = req.params;
-  const userId = '1'; // demo user
+  const userId = String(req.user?._id || req.user?.id || '');
   if (dbReady) {
     const updated = postsRepo.toggleLike(id, userId);
     if (!updated) return res.status(404).json({ error: 'Not found' });
@@ -109,27 +114,29 @@ router.post('/:id/like', (req, res) => {
   res.json({ ...p, likes: p.likedBy.length });
 });
 
-router.post('/:id/comment', (req, res) => {
+router.post('/:id/comment', requireAuth, (req, res) => {
   const { id } = req.params;
   const { text } = req.body;
+  const userId = String(req.user?._id || req.user?.id || '');
+  const userName = String(req.user?.name || '');
   if (dbReady) {
-    const c = postsRepo.addComment(id, { id: `c${Date.now()}`, userId: '1', userName: 'Demo User', text: text || '' });
+    const c = postsRepo.addComment(id, { id: `c${Date.now()}`, userId, userName, text: text || '' });
     if (!c) return res.status(404).json({ error: 'Not found' });
     return res.status(201).json(c);
   }
   const p = posts.find((x) => x.id === id);
   if (!p) return res.status(404).json({ error: 'Not found' });
-  const c = { id: `c${Date.now()}`, userId: '1', userName: 'Demo User', text: text || '', createdAt: new Date().toISOString() };
+  const c = { id: `c${Date.now()}`, userId, userName, text: text || '', createdAt: new Date().toISOString() };
   p.comments.push(c);
   saveJSON('posts.json', posts).catch(() => {});
   res.status(201).json(c);
 });
 
 // Edit a post (owner only)
-router.patch('/:id', (req, res) => {
+router.patch('/:id', requireAuth, (req, res) => {
   const { id } = req.params;
   const { content } = req.body;
-  const userId = '1';
+  const userId = String(req.user?._id || req.user?.id || '');
   const nextContent = (content || '').toString();
 
   if (dbReady) {
@@ -151,9 +158,9 @@ router.patch('/:id', (req, res) => {
 });
 
 // Delete a post (owner only)
-router.delete('/:id', (req, res) => {
+router.delete('/:id', requireAuth, (req, res) => {
   const { id } = req.params;
-  const userId = '1';
+  const userId = String(req.user?._id || req.user?.id || '');
 
   if (dbReady) {
     const p = postsRepo.get(id);
@@ -174,7 +181,7 @@ router.delete('/:id', (req, res) => {
 });
 
 // Edit a comment
-router.patch('/:id/comment/:commentId', (req, res) => {
+router.patch('/:id/comment/:commentId', requireAuth, (req, res) => {
   const { id, commentId } = req.params;
   const { text } = req.body;
   if (dbReady) {
@@ -186,14 +193,15 @@ router.patch('/:id/comment/:commentId', (req, res) => {
   if (!p) return res.status(404).json({ error: 'Not found' });
   const c = p.comments.find((c) => c.id === commentId);
   if (!c) return res.status(404).json({ error: 'Comment not found' });
-  if (c.userId !== '1') return res.status(403).json({ error: 'Forbidden' });
+  const userId = String(req.user?._id || req.user?.id || '');
+  if (c.userId !== userId) return res.status(403).json({ error: 'Forbidden' });
   c.text = text || c.text;
   saveJSON('posts.json', posts).catch(() => {});
   res.json(c);
 });
 
 // Delete a comment
-router.delete('/:id/comment/:commentId', (req, res) => {
+router.delete('/:id/comment/:commentId', requireAuth, (req, res) => {
   const { id, commentId } = req.params;
   if (dbReady) {
     const removed = postsRepo.deleteComment(commentId);
@@ -204,7 +212,8 @@ router.delete('/:id/comment/:commentId', (req, res) => {
   if (!p) return res.status(404).json({ error: 'Not found' });
   const idx = p.comments.findIndex((c) => c.id === commentId);
   if (idx === -1) return res.status(404).json({ error: 'Comment not found' });
-  if (p.comments[idx].userId !== '1') return res.status(403).json({ error: 'Forbidden' });
+  const userId = String(req.user?._id || req.user?.id || '');
+  if (p.comments[idx].userId !== userId) return res.status(403).json({ error: 'Forbidden' });
   const removed = p.comments.splice(idx, 1)[0];
   saveJSON('posts.json', posts).catch(() => {});
   res.json(removed);
