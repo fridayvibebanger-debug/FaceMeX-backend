@@ -128,7 +128,33 @@ app.get('/health', (_req, res) => {
 
 // Persistence mode
 app.get('/persistence', (_req, res) => {
-  res.json({ mode: dbReady ? 'sqlite' : 'json', error: lastError || null });
+  res.json({ ok: true, dbReady, sqliteError: lastError || null });
+});
+
+app.get('/api/health', async (_req, res) => {
+  let mongoConnected = false;
+  try {
+    const conn = await connectDb();
+    mongoConnected = !!conn;
+  } catch {
+    mongoConnected = false;
+  }
+
+  const cloudinaryConfigured =
+    !!process.env.CLOUDINARY_CLOUD_NAME &&
+    !!process.env.CLOUDINARY_API_KEY &&
+    !!process.env.CLOUDINARY_API_SECRET;
+
+  res.json({
+    ok: true,
+    mongo: {
+      configured: !!process.env.MONGODB_URI,
+      connected: mongoConnected,
+    },
+    cloudinary: {
+      configured: cloudinaryConfigured,
+    },
+  });
 });
 
 // API routes
