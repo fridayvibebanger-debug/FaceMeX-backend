@@ -9,7 +9,7 @@ import bodyParser from 'body-parser';
 import { setMe } from './utils/userStore.js';
 import dotenv from 'dotenv';
 import { Server as SocketIOServer } from 'socket.io';
-import mongoose from 'mongoose';
+import { connectDb } from './lib/db.js';
 
 import usersRouter from './routes/users.js';
 import postsRouter from './routes/posts.js';
@@ -30,6 +30,7 @@ import friendsRouter from './routes/friends.js';
 import jobsRouter from './routes/jobs.js';
 import proGroupsRouter from './routes/proGroups.js';
 import marketplaceRouter from './routes/marketplace.js';
+import uploadsRouter from './routes/uploads.js';
 
 // Load environment variables from common locations.
 // We prefer repo-root .env.local, then repo-root .env, then server/.env.
@@ -149,6 +150,7 @@ app.use('/api/friends', friendsRouter);
 app.use('/api/jobs', jobsRouter);
 app.use('/api/pro-groups', proGroupsRouter);
 app.use('/api/marketplace', marketplaceRouter);
+app.use('/api/uploads', uploadsRouter);
 
 // In-memory presence: worldId -> Map<userId, { user: any, avatar: any, socketIds: Set<string> }>
 const worldPresence = new Map();
@@ -281,25 +283,19 @@ io.on('connection', (socket) => {
 const PORT = process.env.PORT || 4000;
 
 // Connect MongoDB (for JournalEntry and any other Mongoose models)
-const MONGO_URI = process.env.MONGODB_URI;
-if (MONGO_URI) {
-  (async () => {
-    try {
-      await mongoose.connect(MONGO_URI, {
-        serverSelectionTimeoutMS: 5000,
-      });
-      console.log('✅ MongoDB connected');
-    } catch (err) {
-      console.error('❌ MongoDB connection failed:', err.message || err);
-      console.log('⚠️  Server will still run, but journal persistence may not work');
-    }
-  })();
-} else {
-  console.log('⚠️  MONGODB_URI is not set; skipping MongoDB connection');
-}
+(async () => {
+  try {
+    const conn = await connectDb();
+    if (conn) console.log('✅ MongoDB connected');
+    else console.log('⚠️  MongoDB not configured; server will run with limited persistence');
+  } catch (err) {
+    console.error('❌ MongoDB connection failed:', err?.message || err);
+    console.log('⚠️  Server will still run, but Mongo persistence may not work');
+  }
+})();
 
 server.listen(PORT, async () => {
-  console.log(`API listening on port ${PORT}`);
+  console.log(`API listening on http://localhost:${PORT}`);
   
   // Initialize AI in the background
   try {
