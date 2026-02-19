@@ -6,6 +6,13 @@ const userSchema = new mongoose.Schema(
     passwordHash: { type: String, required: true },
     name: { type: String, required: true },
     avatar: { type: String, default: '' },
+    coverPhoto: { type: String, default: '' },
+    bio: { type: String, default: '' },
+    pronouns: { type: String, default: '' },
+    mood: { type: String, default: '' },
+    location: { type: String, default: '' },
+    website: { type: String, default: '' },
+    interests: { type: [String], default: [] },
     tier: { type: String, enum: ['free', 'pro', 'creator', 'business', 'exclusive'], default: 'free' },
     addons: {
       verified: { type: Boolean, default: false },
