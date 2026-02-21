@@ -2,9 +2,11 @@ import { mongoose } from '../lib/db.js';
 
 const userSchema = new mongoose.Schema(
   {
-    email: { type: String, required: true, unique: true, lowercase: true, trim: true },
-    passwordHash: { type: String, required: true },
-    name: { type: String, required: true },
+    // externalId is for users authenticated outside this backend (e.g. Supabase)
+    externalId: { type: String, unique: true, sparse: true, index: true },
+    email: { type: String, unique: true, sparse: true, lowercase: true, trim: true },
+    passwordHash: { type: String, default: '' },
+    name: { type: String, default: '' },
     avatar: { type: String, default: '' },
     coverPhoto: { type: String, default: '' },
     bio: { type: String, default: '' },
