@@ -33,11 +33,22 @@ export async function requireAuth(req, res, next) {
     const externalId = Array.isArray(externalIdRaw) ? externalIdRaw[0] : externalIdRaw;
     const externalIdStr = String(externalId || '').trim();
     if (externalIdStr) {
+      const nameRaw = req.headers['x-user-name'];
+      const nameHeader = Array.isArray(nameRaw) ? nameRaw[0] : nameRaw;
+      const displayName = String(nameHeader || '').trim();
+
       let user = await User.findOne({ externalId: externalIdStr }).lean();
       if (!user) {
-        const created = await User.create({ externalId: externalIdStr, name: 'FaceMe User' });
+        const created = await User.create({
+          externalId: externalIdStr,
+          name: displayName || 'FaceMe User',
+        });
         user = created.toObject();
+      } else if (displayName && (!user.name || user.name === 'FaceMe User')) {
+        await User.updateOne({ _id: user._id }, { $set: { name: displayName } });
+        user = await User.findOne({ externalId: externalIdStr }).lean();
       }
+
       req.user = user;
       return next();
     }
