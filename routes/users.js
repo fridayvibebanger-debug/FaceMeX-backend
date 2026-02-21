@@ -10,7 +10,7 @@ const router = Router();
 router.get('/me', requireAuth, async (req, res) => {
   const user = req.user;
   return res.json({
-    id: user._id?.toString?.() || String(user.id || ''),
+    id: String(user.externalId || user._id?.toString?.() || user.id || ''),
     email: user.email,
     name: user.name,
     avatar: user.avatar,
@@ -49,7 +49,7 @@ router.patch('/me', requireAuth, async (req, res) => {
   const updated = await User.findByIdAndUpdate(id, allowed, { new: true }).lean();
   if (!updated) return res.status(404).json({ error: 'not_found' });
   return res.json({
-    id: updated._id.toString(),
+    id: String(updated.externalId || updated._id.toString()),
     email: updated.email,
     name: updated.name,
     avatar: updated.avatar,

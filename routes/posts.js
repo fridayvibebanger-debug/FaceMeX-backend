@@ -5,6 +5,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { createNotification } from '../utils/notify.js';
 import { connectDb } from '../lib/db.js';
 import { Post } from '../models/Post.js';
+import { User } from '../models/User.js';
 
 const router = Router();
 
@@ -44,6 +45,18 @@ function normalizeMode(mode) {
   return mode === 'professional' ? 'professional' : 'social';
 }
 
+function getCanonicalUserId(user) {
+  return String(user?.externalId || user?._id || user?.id || '').trim();
+}
+
+function isOwner(postUserId, user) {
+  const puid = String(postUserId || '').trim();
+  if (!puid) return false;
+  const canonical = getCanonicalUserId(user);
+  const mongoId = String(user?._id || '').trim();
+  return (canonical && puid === canonical) || (mongoId && puid === mongoId);
+}
+
 router.get('/', (req, res) => {
   (async () => {
     const mode = req.query.mode === 'professional' ? 'professional' : (req.query.mode === 'social' ? 'social' : null);
@@ -59,21 +72,35 @@ router.get('/', (req, res) => {
       const query = {};
       if (mode) query.mode = mode;
       const list = await Post.find(query).sort({ createdAt: -1 }).limit(200).lean();
-      const shaped = (list || []).map((p) => ({
-        id: p.id,
-        userId: p.userId,
-        userName: p.userName,
-        avatar: p.avatar,
-        content: p.content,
-        image: p.image || (Array.isArray(p.images) ? (p.images[0] || '') : ''),
-        images: Array.isArray(p.images) ? p.images : [],
-        audio: p.audio || '',
-        mode: normalizeMode(p.mode),
-        likedBy: Array.isArray(p.likedBy) ? p.likedBy : [],
-        likes: Array.isArray(p.likedBy) ? p.likedBy.length : 0,
-        comments: Array.isArray(p.comments) ? p.comments : [],
-        createdAt: p.createdAt ? new Date(p.createdAt).toISOString() : new Date().toISOString(),
-      }));
+
+      const userIds = Array.from(
+        new Set((list || []).map((p) => String(p.userId || '').trim()).filter(Boolean))
+      );
+      const users = userIds.length
+        ? await User.find({ externalId: { $in: userIds } }).select('externalId name avatar').lean()
+        : [];
+      const byExternalId = new Map((users || []).map((u) => [String(u.externalId || ''), u]));
+
+      const shaped = (list || []).map((p) => {
+        const u = byExternalId.get(String(p.userId || ''));
+        const avatar = (u && u.avatar) ? u.avatar : p.avatar;
+        const userName = (u && u.name) ? u.name : p.userName;
+        return {
+          id: p.id,
+          userId: p.userId,
+          userName,
+          avatar,
+          content: p.content,
+          image: p.image || (Array.isArray(p.images) ? (p.images[0] || '') : ''),
+          images: Array.isArray(p.images) ? p.images : [],
+          audio: p.audio || '',
+          mode: normalizeMode(p.mode),
+          likedBy: Array.isArray(p.likedBy) ? p.likedBy : [],
+          likes: Array.isArray(p.likedBy) ? p.likedBy.length : 0,
+          comments: Array.isArray(p.comments) ? p.comments : [],
+          createdAt: p.createdAt ? new Date(p.createdAt).toISOString() : new Date().toISOString(),
+        };
+      });
       let filtered = mode ? shaped.filter((p) => p.mode === mode) : shaped;
       if (skill) filtered = filtered.filter((p) => p.mode === 'professional' && matchesSkill(p.content));
       return res.json(filtered);
@@ -105,7 +132,7 @@ router.post('/', requireAuth, (req, res) => {
     const safeImages = Array.isArray(images) ? images.filter(Boolean).slice(0, 5) : [];
     const firstImage = (safeImages[0] || image || '');
     const id = `p${Date.now()}`;
-    const currentUserId = String(req.user?._id || req.user?.id || '');
+    const currentUserId = getCanonicalUserId(req.user);
     const currentUserName = String(req.user?.name || '');
     const currentUserAvatar = String(req.user?.avatar || '');
 
@@ -178,7 +205,7 @@ router.post('/', requireAuth, (req, res) => {
 router.post('/:id/like', requireAuth, (req, res) => {
   (async () => {
     const { id } = req.params;
-    const userId = String(req.user?._id || req.user?.id || '');
+    const userId = getCanonicalUserId(req.user);
     const userName = String(req.user?.name || 'Someone');
 
     if (await mongoReady()) {
@@ -280,7 +307,7 @@ router.post('/:id/comment', requireAuth, (req, res) => {
   (async () => {
     const { id } = req.params;
     const { text } = req.body;
-    const userId = String(req.user?._id || req.user?.id || '');
+    const userId = getCanonicalUserId(req.user);
     const userName = String(req.user?.name || '');
     const comment = { id: `c${Date.now()}`, userId, userName, text: text || '', createdAt: new Date().toISOString() };
 
@@ -355,13 +382,13 @@ router.patch('/:id', requireAuth, (req, res) => {
   (async () => {
     const { id } = req.params;
     const { content } = req.body;
-    const userId = String(req.user?._id || req.user?.id || '');
+    const userId = getCanonicalUserId(req.user);
     const nextContent = (content || '').toString();
 
     if (await mongoReady()) {
       const doc = await Post.findOne({ id });
       if (!doc) return res.status(404).json({ error: 'Not found' });
-      if (String(doc.userId || '') !== String(userId)) return res.status(403).json({ error: 'Forbidden' });
+      if (!isOwner(doc.userId, req.user)) return res.status(403).json({ error: 'Forbidden' });
       doc.content = nextContent || doc.content;
       await doc.save();
       return res.json({
@@ -384,7 +411,7 @@ router.patch('/:id', requireAuth, (req, res) => {
     if (dbReady) {
       const p = postsRepo.get(id);
       if (!p) return res.status(404).json({ error: 'Not found' });
-      if (String(p.userId || '') !== String(userId)) return res.status(403).json({ error: 'Forbidden' });
+      if (String(p.userId || '') !== String(userId) && String(p.userId || '') !== String(req.user?._id || '')) return res.status(403).json({ error: 'Forbidden' });
       // simple update without adding a new repo function
       postsRepo._db.prepare(`UPDATE posts SET content=? WHERE id=?`).run(nextContent, id);
       const updated = postsRepo.get(id);
@@ -393,7 +420,7 @@ router.patch('/:id', requireAuth, (req, res) => {
 
     const p = posts.find((x) => x.id === id);
     if (!p) return res.status(404).json({ error: 'Not found' });
-    if (String(p.userId || '') !== String(userId)) return res.status(403).json({ error: 'Forbidden' });
+    if (String(p.userId || '') !== String(userId) && String(p.userId || '') !== String(req.user?._id || '')) return res.status(403).json({ error: 'Forbidden' });
     p.content = nextContent || p.content;
     saveJSON('posts.json', posts).catch(() => {});
     return res.json({ ...p, likes: Array.isArray(p.likedBy) ? p.likedBy.length : (p.likes || 0) });
@@ -404,12 +431,12 @@ router.patch('/:id', requireAuth, (req, res) => {
 router.delete('/:id', requireAuth, (req, res) => {
   (async () => {
     const { id } = req.params;
-    const userId = String(req.user?._id || req.user?.id || '');
+    const userId = getCanonicalUserId(req.user);
 
     if (await mongoReady()) {
       const doc = await Post.findOne({ id });
       if (!doc) return res.status(404).json({ error: 'Not found' });
-      if (String(doc.userId || '') !== String(userId)) return res.status(403).json({ error: 'Forbidden' });
+      if (!isOwner(doc.userId, req.user)) return res.status(403).json({ error: 'Forbidden' });
       await Post.deleteOne({ id });
       return res.json({ ok: true });
     }
@@ -417,7 +444,7 @@ router.delete('/:id', requireAuth, (req, res) => {
     if (dbReady) {
       const p = postsRepo.get(id);
       if (!p) return res.status(404).json({ error: 'Not found' });
-      if (String(p.userId || '') !== String(userId)) return res.status(403).json({ error: 'Forbidden' });
+      if (String(p.userId || '') !== String(userId) && String(p.userId || '') !== String(req.user?._id || '')) return res.status(403).json({ error: 'Forbidden' });
       postsRepo._db.prepare(`DELETE FROM posts WHERE id=?`).run(id);
       postsRepo._db.prepare(`DELETE FROM post_likes WHERE postId=?`).run(id);
       postsRepo._db.prepare(`DELETE FROM comments WHERE postId=?`).run(id);
@@ -426,7 +453,7 @@ router.delete('/:id', requireAuth, (req, res) => {
 
     const idx = posts.findIndex((x) => x.id === id);
     if (idx === -1) return res.status(404).json({ error: 'Not found' });
-    if (String(posts[idx].userId || '') !== String(userId)) return res.status(403).json({ error: 'Forbidden' });
+    if (String(posts[idx].userId || '') !== String(userId) && String(posts[idx].userId || '') !== String(req.user?._id || '')) return res.status(403).json({ error: 'Forbidden' });
     posts.splice(idx, 1);
     saveJSON('posts.json', posts).catch(() => {});
     return res.json({ ok: true });
@@ -438,7 +465,7 @@ router.patch('/:id/comment/:commentId', requireAuth, (req, res) => {
   (async () => {
     const { id, commentId } = req.params;
     const { text } = req.body;
-    const userId = String(req.user?._id || req.user?.id || '');
+    const userId = getCanonicalUserId(req.user);
 
     if (await mongoReady()) {
       const doc = await Post.findOne({ id });
@@ -474,7 +501,7 @@ router.patch('/:id/comment/:commentId', requireAuth, (req, res) => {
 router.delete('/:id/comment/:commentId', requireAuth, (req, res) => {
   (async () => {
     const { id, commentId } = req.params;
-    const userId = String(req.user?._id || req.user?.id || '');
+    const userId = getCanonicalUserId(req.user);
 
     if (await mongoReady()) {
       const doc = await Post.findOne({ id });
