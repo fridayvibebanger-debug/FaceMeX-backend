@@ -44,7 +44,7 @@ export async function requireAuth(req, res, next) {
           name: displayName || 'FaceMe User',
         });
         user = created.toObject();
-      } else if (displayName && (!user.name || user.name === 'FaceMe User')) {
+      } else if (displayName && String(user.name || '') !== displayName) {
         await User.updateOne({ _id: user._id }, { $set: { name: displayName } });
         user = await User.findOne({ externalId: externalIdStr }).lean();
       }
