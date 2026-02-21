@@ -5,6 +5,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { createNotification } from '../utils/notify.js';
 import { connectDb } from '../lib/db.js';
 import { Post } from '../models/Post.js';
+import { mongoose } from '../lib/db.js';
 import { User } from '../models/User.js';
 
 const router = Router();
@@ -76,13 +77,29 @@ router.get('/', (req, res) => {
       const userIds = Array.from(
         new Set((list || []).map((p) => String(p.userId || '').trim()).filter(Boolean))
       );
+      const objectIds = userIds
+        .filter((id) => /^[0-9a-fA-F]{24}$/.test(id))
+        .map((id) => new mongoose.Types.ObjectId(id));
+
       const users = userIds.length
-        ? await User.find({ externalId: { $in: userIds } }).select('externalId name avatar').lean()
+        ? await User.find({
+            $or: [
+              { externalId: { $in: userIds } },
+              ...(objectIds.length ? [{ _id: { $in: objectIds } }] : []),
+            ],
+          })
+            .select('externalId name avatar')
+            .lean()
         : [];
-      const byExternalId = new Map((users || []).map((u) => [String(u.externalId || ''), u]));
+
+      const byUserId = new Map();
+      for (const u of users || []) {
+        if (u.externalId) byUserId.set(String(u.externalId), u);
+        if (u._id) byUserId.set(String(u._id), u);
+      }
 
       const shaped = (list || []).map((p) => {
-        const u = byExternalId.get(String(p.userId || ''));
+        const u = byUserId.get(String(p.userId || ''));
         const avatar = (u && u.avatar) ? u.avatar : p.avatar;
         const userName = (u && u.name) ? u.name : p.userName;
         return {
