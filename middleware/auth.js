@@ -35,7 +35,20 @@ export async function requireAuth(req, res, next) {
     if (externalIdStr) {
       const nameRaw = req.headers['x-user-name'];
       const nameHeader = Array.isArray(nameRaw) ? nameRaw[0] : nameRaw;
-      const displayName = String(nameHeader || '').trim();
+      let displayName = String(nameHeader || '').trim();
+
+      // If frontend didn't send x-user-name, try to derive it from the Supabase JWT payload.
+      // We DON'T verify this token here (Supabase keys aren't configured); we only use it
+      // to pick a friendly display name.
+      if (!displayName && token) {
+        try {
+          const decoded = jwt.decode(token) || {};
+          const fullName = String(decoded?.user_metadata?.full_name || '').trim();
+          const email = String(decoded?.email || '').trim();
+          displayName = fullName || email;
+        } catch {
+        }
+      }
 
       let user = await User.findOne({ externalId: externalIdStr }).lean();
       if (!user) {
@@ -44,7 +57,10 @@ export async function requireAuth(req, res, next) {
           name: displayName || 'FaceMe User',
         });
         user = created.toObject();
-      } else if (displayName && String(user.name || '') !== displayName) {
+      } else if (
+        displayName &&
+        (String(user.name || '') !== displayName || String(user.name || '') === 'FaceMe User')
+      ) {
         await User.updateOne({ _id: user._id }, { $set: { name: displayName } });
         user = await User.findOne({ externalId: externalIdStr }).lean();
       }
