@@ -22,6 +22,8 @@ const postSchema = new mongoose.Schema(
     images: { type: [String], default: [] },
     audio: { type: String, default: '' },
     mode: { type: String, enum: ['social', 'professional'], default: 'social', index: true },
+    collabInvites: { type: [String], default: [] },
+    collaborators: { type: [String], default: [] },
     likedBy: { type: [String], default: [] },
     comments: { type: [commentSchema], default: [] },
   },
