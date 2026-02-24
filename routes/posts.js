@@ -10,22 +10,7 @@ import { User } from '../models/User.js';
 
 const router = Router();
 
-// In-memory mock posts
-let posts = [
-  {
-    id: 'p1',
-    userId: '1',
-    userName: 'Demo User',
-    avatar: '',
-    content: 'Hello FaceMe! 🚀',
-    image: '',
-    images: [],
-    likedBy: [],
-    comments: [],
-    createdAt: new Date().toISOString(),
-    mode: 'social',
-  },
-];
+let posts = [];
 
 // Initialize SQLite if available; otherwise load JSON fallback
 await initSqlite();
@@ -56,6 +41,17 @@ function isOwner(postUserId, user) {
   const canonical = getCanonicalUserId(user);
   const mongoId = String(user?._id || '').trim();
   return (canonical && puid === canonical) || (mongoId && puid === mongoId);
+}
+
+function isCollaborator(post, user) {
+  const canonical = getCanonicalUserId(user);
+  if (!canonical) return false;
+  const collaborators = Array.isArray(post?.collaborators) ? post.collaborators : [];
+  return collaborators.map((x) => String(x)).includes(String(canonical));
+}
+
+function canEdit(post, user) {
+  return isOwner(post?.userId, user) || isCollaborator(post, user);
 }
 
 router.get('/', (req, res) => {
@@ -112,6 +108,8 @@ router.get('/', (req, res) => {
           images: Array.isArray(p.images) ? p.images : [],
           audio: p.audio || '',
           mode: normalizeMode(p.mode),
+          collabInvites: Array.isArray(p.collabInvites) ? p.collabInvites : [],
+          collaborators: Array.isArray(p.collaborators) ? p.collaborators : [],
           likedBy: Array.isArray(p.likedBy) ? p.likedBy : [],
           likes: Array.isArray(p.likedBy) ? p.likedBy.length : 0,
           comments: Array.isArray(p.comments) ? p.comments : [],
@@ -143,6 +141,107 @@ router.get('/', (req, res) => {
   })().catch(() => res.status(500).json({ error: 'server_error' }));
 });
 
+// Invite a collaborator (owner only)
+router.post('/:id/collab/invite', requireAuth, (req, res) => {
+  (async () => {
+    const { id } = req.params;
+    const inviteeIdRaw = String(req.body?.userId || '').trim();
+    if (!inviteeIdRaw) return res.status(400).json({ error: 'userId_required' });
+    const inviterId = getCanonicalUserId(req.user);
+
+    if (!(await mongoReady())) {
+      return res.status(501).json({ error: 'not_supported' });
+    }
+
+    const doc = await Post.findOne({ id });
+    if (!doc) return res.status(404).json({ error: 'Not found' });
+    if (!isOwner(doc.userId, req.user)) return res.status(403).json({ error: 'Forbidden' });
+    if (String(inviteeIdRaw) === String(inviterId)) return res.status(400).json({ error: 'cannot_invite_self' });
+
+    const invites = Array.isArray(doc.collabInvites) ? doc.collabInvites.map(String) : [];
+    const collaborators = Array.isArray(doc.collaborators) ? doc.collaborators.map(String) : [];
+    if (collaborators.includes(String(inviteeIdRaw))) {
+      return res.json({ ok: true, status: 'already_collaborator' });
+    }
+    if (!invites.includes(String(inviteeIdRaw))) invites.push(String(inviteeIdRaw));
+    doc.collabInvites = invites;
+    await doc.save();
+
+    try {
+      createNotification(req, {
+        toUserId: String(inviteeIdRaw),
+        fromUserId: String(inviterId),
+        type: 'collab_invite',
+        title: 'Collaboration Invite',
+        message: `${String(req.user?.name || 'Someone')} invited you to collaborate on a post`,
+        actionUrl: '/feed',
+        meta: { postId: id },
+      }).catch(() => {});
+    } catch {}
+
+    return res.json({ ok: true, collabInvites: doc.collabInvites, collaborators: doc.collaborators });
+  })().catch(() => res.status(500).json({ error: 'server_error' }));
+});
+
+// Accept a collaboration invite (invitee only)
+router.post('/:id/collab/accept', requireAuth, (req, res) => {
+  (async () => {
+    const { id } = req.params;
+    const userId = getCanonicalUserId(req.user);
+
+    if (!(await mongoReady())) {
+      return res.status(501).json({ error: 'not_supported' });
+    }
+
+    const doc = await Post.findOne({ id });
+    if (!doc) return res.status(404).json({ error: 'Not found' });
+
+    const invites = Array.isArray(doc.collabInvites) ? doc.collabInvites.map(String) : [];
+    if (!invites.includes(String(userId))) return res.status(403).json({ error: 'No invite' });
+
+    const nextInvites = invites.filter((x) => x !== String(userId));
+    const collaborators = Array.isArray(doc.collaborators) ? doc.collaborators.map(String) : [];
+    if (!collaborators.includes(String(userId))) collaborators.push(String(userId));
+    doc.collabInvites = nextInvites;
+    doc.collaborators = collaborators;
+    await doc.save();
+
+    try {
+      createNotification(req, {
+        toUserId: String(doc.userId),
+        fromUserId: String(userId),
+        type: 'collab_accept',
+        title: 'Collaboration Accepted',
+        message: `${String(req.user?.name || 'Someone')} accepted your collaboration invite`,
+        actionUrl: '/feed',
+        meta: { postId: id },
+      }).catch(() => {});
+    } catch {}
+
+    return res.json({ ok: true, collabInvites: doc.collabInvites, collaborators: doc.collaborators });
+  })().catch(() => res.status(500).json({ error: 'server_error' }));
+});
+
+// Reject a collaboration invite (invitee only)
+router.post('/:id/collab/reject', requireAuth, (req, res) => {
+  (async () => {
+    const { id } = req.params;
+    const userId = getCanonicalUserId(req.user);
+
+    if (!(await mongoReady())) {
+      return res.status(501).json({ error: 'not_supported' });
+    }
+
+    const doc = await Post.findOne({ id });
+    if (!doc) return res.status(404).json({ error: 'Not found' });
+    const invites = Array.isArray(doc.collabInvites) ? doc.collabInvites.map(String) : [];
+    if (!invites.includes(String(userId))) return res.status(403).json({ error: 'No invite' });
+    doc.collabInvites = invites.filter((x) => x !== String(userId));
+    await doc.save();
+    return res.json({ ok: true, collabInvites: doc.collabInvites, collaborators: doc.collaborators });
+  })().catch(() => res.status(500).json({ error: 'server_error' }));
+});
+
 router.post('/', requireAuth, (req, res) => {
   (async () => {
     const { content, image, images, audio, mode } = req.body;
@@ -164,6 +263,8 @@ router.post('/', requireAuth, (req, res) => {
         images: safeImages,
         audio: audio || '',
         mode: normalizeMode(mode),
+        collabInvites: [],
+        collaborators: [],
         likedBy: [],
         comments: [],
       });
@@ -176,6 +277,8 @@ router.post('/', requireAuth, (req, res) => {
         image: created.image,
         images: created.images,
         audio: created.audio,
+        collabInvites: Array.isArray(created.collabInvites) ? created.collabInvites : [],
+        collaborators: Array.isArray(created.collaborators) ? created.collaborators : [],
         likedBy: created.likedBy,
         comments: created.comments,
         createdAt: created.createdAt.toISOString(),
@@ -405,7 +508,7 @@ router.patch('/:id', requireAuth, (req, res) => {
     if (await mongoReady()) {
       const doc = await Post.findOne({ id });
       if (!doc) return res.status(404).json({ error: 'Not found' });
-      if (!isOwner(doc.userId, req.user)) return res.status(403).json({ error: 'Forbidden' });
+      if (!canEdit(doc, req.user)) return res.status(403).json({ error: 'Forbidden' });
       doc.content = nextContent || doc.content;
       await doc.save();
       return res.json({
@@ -418,6 +521,8 @@ router.patch('/:id', requireAuth, (req, res) => {
         images: Array.isArray(doc.images) ? doc.images : [],
         audio: doc.audio || '',
         mode: normalizeMode(doc.mode),
+        collabInvites: Array.isArray(doc.collabInvites) ? doc.collabInvites : [],
+        collaborators: Array.isArray(doc.collaborators) ? doc.collaborators : [],
         likedBy: Array.isArray(doc.likedBy) ? doc.likedBy : [],
         likes: Array.isArray(doc.likedBy) ? doc.likedBy.length : 0,
         comments: Array.isArray(doc.comments) ? doc.comments : [],
