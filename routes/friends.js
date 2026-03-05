@@ -1,6 +1,5 @@
 import { Router } from 'express';
 import { loadJSON, saveJSON } from '../utils/jsonStore.js';
-import { createNotification } from '../utils/notify.js';
 
 const router = Router();
 
@@ -79,18 +78,6 @@ router.post('/request', async (req, res) => {
   store.requests = requests;
   await saveJSON('friends.json', store);
 
-  try {
-    createNotification(req, {
-      toUserId: toUser.id,
-      fromUserId,
-      type: 'follow',
-      title: 'New Follower',
-      message: `${fromUser.name} sent you a friend request`,
-      actionUrl: '/profile',
-      meta: { requestId: request.id },
-    }).catch(() => {});
-  } catch {}
-
   const io = req.app.get('io');
   if (io) {
     io.to(`user:${toUser.id}`).emit('friend:request', request);
@@ -118,18 +105,6 @@ router.post('/request/:id/accept', async (req, res) => {
   addFriendEdge(store, r.fromUserId, r.toUserId);
 
   await saveJSON('friends.json', store);
-
-  try {
-    createNotification(req, {
-      toUserId: r.fromUserId,
-      fromUserId: r.toUserId,
-      type: 'follow',
-      title: 'Friend Request Accepted',
-      message: `${r.toName} accepted your friend request`,
-      actionUrl: '/profile',
-      meta: { requestId: r.id },
-    }).catch(() => {});
-  } catch {}
 
   const io = req.app.get('io');
   if (io) {
