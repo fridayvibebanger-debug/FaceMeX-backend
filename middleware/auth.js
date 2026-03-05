@@ -12,64 +12,15 @@ export async function requireAuth(req, res, next) {
   try {
     const header = req.headers.authorization || '';
     const [, token] = header.split(' ');
+    if (!token) return res.status(401).json({ error: 'unauthorized' });
+
+    const payload = jwt.verify(token, JWT_SECRET);
     await connectDb();
+    const user = await User.findById(payload.sub).lean();
+    if (!user) return res.status(401).json({ error: 'unauthorized' });
 
-    // 1) Preferred: our own JWT
-    if (token) {
-      try {
-        const payload = jwt.verify(token, JWT_SECRET);
-        const user = await User.findById(payload.sub).lean();
-        if (user) {
-          req.user = user;
-          return next();
-        }
-      } catch {
-        // fall through
-      }
-    }
-
-    // 2) Fallback: x-user-id (used by frontend for Supabase auth)
-    const externalIdRaw = req.headers['x-user-id'];
-    const externalId = Array.isArray(externalIdRaw) ? externalIdRaw[0] : externalIdRaw;
-    const externalIdStr = String(externalId || '').trim();
-    if (externalIdStr) {
-      const nameRaw = req.headers['x-user-name'];
-      const nameHeader = Array.isArray(nameRaw) ? nameRaw[0] : nameRaw;
-      let displayName = String(nameHeader || '').trim();
-
-      // If frontend didn't send x-user-name, try to derive it from the Supabase JWT payload.
-      // We DON'T verify this token here (Supabase keys aren't configured); we only use it
-      // to pick a friendly display name.
-      if (!displayName && token) {
-        try {
-          const decoded = jwt.decode(token) || {};
-          const fullName = String(decoded?.user_metadata?.full_name || '').trim();
-          const email = String(decoded?.email || '').trim();
-          displayName = fullName || email;
-        } catch {
-        }
-      }
-
-      let user = await User.findOne({ externalId: externalIdStr }).lean();
-      if (!user) {
-        const created = await User.create({
-          externalId: externalIdStr,
-          name: displayName || 'FaceMe User',
-        });
-        user = created.toObject();
-      } else if (
-        displayName &&
-        (String(user.name || '') !== displayName || String(user.name || '') === 'FaceMe User')
-      ) {
-        await User.updateOne({ _id: user._id }, { $set: { name: displayName } });
-        user = await User.findOne({ externalId: externalIdStr }).lean();
-      }
-
-      req.user = user;
-      return next();
-    }
-
-    return res.status(401).json({ error: 'unauthorized' });
+    req.user = user;
+    next();
   } catch (err) {
     return res.status(401).json({ error: 'unauthorized' });
   }
