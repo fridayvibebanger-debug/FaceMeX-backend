@@ -189,19 +189,6 @@ router.get('/suggested', requireAuth, async (req, res) => {
       if (users.length >= 6) break;
     }
 
-    // Fallback sample users if not enough from posts
-    if (users.length < 3) {
-      const defaults = [
-        { id: '2', name: 'Sarah Johnson', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=sarah' },
-        { id: '3', name: 'Mike Chen', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=mike' },
-        { id: '4', name: 'Emma Wilson', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=emma' },
-      ];
-      for (const d of defaults) {
-        if (users.length >= 6) break;
-        if (!seen.has(d.id)) users.push(d);
-      }
-    }
-
     res.json({ users });
   } catch (err) {
     res.status(500).json({ users: [] });
