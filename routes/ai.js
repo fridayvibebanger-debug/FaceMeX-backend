@@ -372,7 +372,7 @@ Requirements:
 - Return plain text only.
 
 Post:
-${text || 'Write a short, friendly post for my FaceMe audience.'}`;
+${text || 'Write a short, friendly post for my FaceMeX audience.'}`;
     if (useLocalAi) {
       try {
         const { askChat } = await import('../services/aiService.js');
@@ -382,7 +382,7 @@ ${text || 'Write a short, friendly post for my FaceMe audience.'}`;
       } catch (e) {
         console.error('post-enhancer deepseek error', e);
         // Soft fallback to simple local template
-        const enhanced = ` Optimized Post:\n${text.trim() || 'Your post'}\n\nHashtags: #FaceMe #Create #Inspire`;
+        const enhanced = ` Optimized Post:\n${text.trim() || 'Your post'}\n\nHashtags: #FaceMeX #Create #Inspire`;
         return res.json({ ok: true, result: enhanced, source: 'mock-fallback' });
       }
     }
@@ -400,7 +400,7 @@ ${text || 'Write a short, friendly post for my FaceMe audience.'}`;
       console.error('post-enhancer deepseek api error', e);
     }
 
-    const enhanced = ` Optimized Post:\n${text.trim() || 'Your post'}\n\nHashtags: #FaceMe #Create #Inspire`;
+    const enhanced = ` Optimized Post:\n${text.trim() || 'Your post'}\n\nHashtags: #FaceMeX #Create #Inspire`;
     return res.json({ ok: true, result: enhanced, source: 'mock' });
   } catch (err) {
     console.error('post-enhancer error', err);
@@ -411,10 +411,10 @@ ${text || 'Write a short, friendly post for my FaceMe audience.'}`;
 router.post('/dev/caption-muse', async (req, res) => {
   try {
     const { topic = '' } = req.body || {};
-    const prompt = `You are a playful but professional caption generator for the FaceMe platform.
+    const prompt = `You are a playful but professional caption generator for the FaceMeX platform.
 
 Generate 3 short, scroll-stopping social captions for:
-${topic || 'a moment on FaceMe'}
+${topic || 'a moment on FaceMeX'}
 
 Requirements:
 - Max 1–2 short sentences per caption.
@@ -457,7 +457,7 @@ Requirements:
 
     const captions = [
       ` ${topic || 'This moment'}, but make it unforgettable.`,
-      `Vibes set. ${topic || 'Let’s go.'} #FaceMe`,
+      `Vibes set. ${topic || 'Let’s go.'} #FaceMeX`,
       `Your daily spark: ${topic || 'creativity'} #Create #Inspire`,
     ];
     return res.json({ ok: true, suggestions: captions, source: 'mock' });
@@ -551,7 +551,7 @@ Return plain text only, no JSON.`;
 router.post('/dev/assistant', async (req, res) => {
   try {
     const { goal = 'grow audience', audience = 'general', topic = 'content' } = req.body || {};
-    const prompt = `You are a concise creator and professional coach for the FaceMe social platform.\nUser goal: ${goal}. Audience: ${audience}. Topic: ${topic}.\nGive 3 short coaching tips and 3 concrete content ideas.\nRespond as plain text with two sections:\nTips:\n- tip1\n- tip2\n- tip3\nIdeas:\n- idea1\n- idea2\n- idea3`;
+    const prompt = `You are a concise creator and professional coach for the FaceMeX social platform.\nUser goal: ${goal}. Audience: ${audience}. Topic: ${topic}.\nGive 3 short coaching tips and 3 concrete content ideas.\nRespond as plain text with two sections:\nTips:\n- tip1\n- tip2\n- tip3\nIdeas:\n- idea1\n- idea2\n- idea3`;
 
     if (useLocalAi) {
       try {
@@ -644,7 +644,7 @@ router.post('/pro/resume-builder', async (req, res) => {
     const personal = `Name: ${fullName || '[Your Name]'}\nEmail: ${email || 'your.email@example.com'}\nPhone: ${phone || '+0 000 000 0000'}\nLocation: ${location || 'Your City, Country'}\nID: ${idNumber || '[ID / Profile ID]'}`;
     const cvNotes = `Summary:\n${summary}\n\nExperience:\n${experience}\n\nSkills:\n${skills}\n\nEducation:\n${education}\n\nExtras:\n${extras}`;
 
-    const prompt = `You are a professional CV writer for the FaceMe platform. Using the structured details below, write a complete, start-to-finish CV in English.\n\nRequirements:\n- Start with a clean header that clearly shows the candidate name and contact details.\n- Include the ID as a reference field in the header or an "ID" line.\n- Include clear sections: PROFESSIONAL SUMMARY, EXPERIENCE, SKILLS, EDUCATION. Optionally add ADDITIONAL INFORMATION for extras.\n- Use bullet points for responsibilities and achievements under each role.\n- Make it ATS-friendly, concise, and easy to copy-paste.\n- If the input is very short or weak, gently expand with realistic but generic wording so the CV still feels complete.\n- Keep the CV length suitable for about 1–2 pages only (do not write more than roughly two pages of content).\n- Return plain text only (no markdown, no JSON).\n\nPERSONAL DETAILS:\n${personal}\n\nCANDIDATE NOTES:\n${cvNotes}`;
+    const prompt = `You are a professional CV writer for the FaceMeX platform. Using the structured details below, write a complete, start-to-finish CV in English.\n\nRequirements:\n- Start with a clean header that clearly shows the candidate name and contact details.\n- Include the ID as a reference field in the header or an "ID" line.\n- Include clear sections: PROFESSIONAL SUMMARY, EXPERIENCE, SKILLS, EDUCATION. Optionally add ADDITIONAL INFORMATION for extras.\n- Use bullet points for responsibilities and achievements under each role.\n- Make it ATS-friendly, concise, and easy to copy-paste.\n- If the input is very short or weak, gently expand with realistic but generic wording so the CV still feels complete.\n- Keep the CV length suitable for about 1–2 pages only (do not write more than roughly two pages of content).\n- Return plain text only (no markdown, no JSON).\n\nPERSONAL DETAILS:\n${personal}\n\nCANDIDATE NOTES:\n${cvNotes}`;
 
     if (useLocalAi) {
       try {
@@ -762,7 +762,7 @@ ${
   }
 
 TIP
-This is a strong starter CV. For a more advanced, recruiter-style rewrite with sharper wording, you can upgrade using the AI CV Upgrade (Creator+) tool in FaceMe.`;
+This is a strong starter CV. For a more advanced, recruiter-style rewrite with sharper wording, you can upgrade using the AI CV Upgrade (Creator+) tool in FaceMeX.`;
     return res.json({ ok: true, resumeText, source: 'mock' });
   } catch (err) {
     console.error('resume-builder error', err);
@@ -794,7 +794,7 @@ router.post('/pro/resume-improver', async (req, res) => {
 
     const isCreatorPlus = String(tier || '').toLowerCase() === 'creator+' || creatorPlus === true || String(tier || '').toLowerCase() === 'business';
 
-    const prompt = `You are a senior CV and career coach helping creators and professionals on the FaceMe platform.
+    const prompt = `You are a senior CV and career coach helping creators and professionals on the FaceMeX platform.
 The user pasted their CURRENT CV below. Your job is to REWRITE it into a stronger, modern CV suitable for a ${level} role.
 
 Requirements:
@@ -968,7 +968,7 @@ router.post('/pro/job-assistant', async (req, res) => {
       creatorPlus === true ||
       ['creator', 'business', 'exclusive'].includes(String(tier || '').toLowerCase());
 
-    const prompt = `You are a practical job search coach helping a user on the FaceMe platform. Give advanced, realistic advice.
+    const prompt = `You are a practical job search coach helping a user on the FaceMeX platform. Give advanced, realistic advice.
 
 User context:
 - Target role: ${role || 'open to roles'}
@@ -981,7 +981,7 @@ User context:
 
 Return 5 numbered strategies. Each item must focus on ONE of these areas (in order):
 1) Role focus & target job titles (which roles and where to search).
-2) CV / profile improvements (CV, FaceMe, LinkedIn or portfolio).
+2) CV / profile improvements (CV, FaceMeX, LinkedIn or portfolio).
 3) Application strategy (how many applications, how to tailor, which platforms).
 4) Networking & outreach (who to contact and how).
 5) Weekly routine based on their available hours (a simple schedule with concrete actions).
