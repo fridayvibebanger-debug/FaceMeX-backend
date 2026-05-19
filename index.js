@@ -32,33 +32,34 @@ import proGroupsRouter from './routes/proGroups.js';
 import marketplaceRouter from './routes/marketplace.js';
 import uploadsRouter from './routes/uploads.js';
 
-// Load environment variables from common locations.
-// We prefer repo-root .env.local, then repo-root .env, then server/.env.
 try {
   const rootEnvLocal = new URL('../.env.local', import.meta.url);
   dotenv.config({ path: rootEnvLocal, override: false });
 } catch {}
+
 try {
   const rootEnv = new URL('../.env', import.meta.url);
   dotenv.config({ path: rootEnv, override: false });
 } catch {}
+
 dotenv.config({ override: false });
 
 const app = express();
 
-const clientOrigins = (process.env.CLIENT_ORIGIN || '')
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean);
+const allowedOrigins = [
+  'https://facemexsocial.com',
+  'https://www.facemexsocial.com',
+  'https://privatebeta4.netlify.app',
+  'http://localhost:5173',
+];
 
 const isAllowedOrigin = (origin) => {
   if (!origin) return true;
-  if (/^http:\/\/localhost:\d+$/.test(origin)) return true;
-  if (clientOrigins.includes(origin)) return true;
-  return false;
+  return allowedOrigins.includes(origin);
 };
 
 const server = http.createServer(app);
+
 const io = new SocketIOServer(server, {
   cors: {
     origin: (origin, cb) => {
@@ -68,13 +69,13 @@ const io = new SocketIOServer(server, {
     credentials: true,
   },
 });
-// expose io for routers
+
 app.set('io', io);
 
-// Basic middlewares (except JSON parsing, added after webhook)
 app.use(helmet());
 app.use(morgan('dev'));
 app.use(cookieParser());
+
 app.use(
   cors({
     origin: (origin, callback) => {
@@ -85,54 +86,74 @@ app.use(
   })
 );
 
-// Stripe webhook (must be before express.json). Uses raw body for signature verification.
 if (process.env.STRIPE_SECRET_KEY) {
-  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2024-06-20' });
-  app.post('/api/billing/webhook', bodyParser.raw({ type: 'application/json' }), (req, res) => {
-    const sig = req.headers['stripe-signature'];
-    if (!sig) return res.status(400).send('Missing Stripe signature');
-    if (!process.env.STRIPE_WEBHOOK_SECRET) return res.status(200).send('ok');
-    let event;
-    try {
-      event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
-    } catch (err) {
-      return res.status(400).send(`Webhook Error: ${err.message}`);
-    }
-    switch (event.type) {
-      case 'checkout.session.completed': {
-        // Upgrade local demo user to Creator+
-        try { setMe({ tier: 'creator' }); } catch {}
-        break;
-      }
-      default: {
-        break;
-      }
-    }
-    return res.status(200).json({ received: true });
+  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+    apiVersion: '2024-06-20',
   });
+
+  app.post(
+    '/api/billing/webhook',
+    bodyParser.raw({ type: 'application/json' }),
+    (req, res) => {
+      const sig = req.headers['stripe-signature'];
+
+      if (!sig) return res.status(400).send('Missing Stripe signature');
+      if (!process.env.STRIPE_WEBHOOK_SECRET) return res.status(200).send('ok');
+
+      let event;
+
+      try {
+        event = stripe.webhooks.constructEvent(
+          req.body,
+          sig,
+          process.env.STRIPE_WEBHOOK_SECRET
+        );
+      } catch (err) {
+        return res.status(400).send(`Webhook Error: ${err.message}`);
+      }
+
+      switch (event.type) {
+        case 'checkout.session.completed': {
+          try {
+            setMe({ tier: 'creator' });
+          } catch {}
+          break;
+        }
+        default:
+          break;
+      }
+
+      return res.status(200).json({ received: true });
+    }
+  );
 }
 
-// Now JSON/body parsers (after webhook)
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// Root route
 app.get('/', (_req, res) => {
   res.type('text/plain').send('FaceMe API is running. See /health and /api/* endpoints.');
 });
 
-// Health
 app.get('/health', (_req, res) => {
-  res.json({ ok: true, service: 'faceme-api', env: process.env.NODE_ENV || 'dev' });
+  res.json({
+    ok: true,
+    service: 'faceme-api',
+    env: process.env.NODE_ENV || 'dev',
+  });
 });
 
-// Persistence mode
 app.get('/persistence', (_req, res) => {
-  res.json({ ok: true, dbReady, sqliteError: lastError || null });
+  res.json({
+    ok: true,
+    dbReady,
+    sqliteError: lastError || null,
+  });
 });
 
 app.get('/api/health', async (_req, res) => {
   let mongoConnected = false;
+
   try {
     const conn = await connectDb();
     mongoConnected = !!conn;
@@ -157,7 +178,6 @@ app.get('/api/health', async (_req, res) => {
   });
 });
 
-// API routes
 app.use('/api/auth', authRouter);
 app.use('/api/users', usersRouter);
 app.use('/api/posts', postsRouter);
@@ -178,10 +198,8 @@ app.use('/api/pro-groups', proGroupsRouter);
 app.use('/api/marketplace', marketplaceRouter);
 app.use('/api/uploads', uploadsRouter);
 
-// In-memory presence: worldId -> Map<userId, { user: any, avatar: any, socketIds: Set<string> }>
 const worldPresence = new Map();
 
-// Socket.io
 io.on('connection', (socket) => {
   socket.emit('connected', { ok: true });
 
@@ -190,7 +208,6 @@ io.on('connection', (socket) => {
     socket.join(`user:${userId}`);
   });
 
-  // Basic 1:1 call signaling using conversation ID as roomId
   socket.on('call:join', ({ roomId, userId }) => {
     if (!roomId) return;
     socket.join(roomId);
@@ -217,7 +234,6 @@ io.on('connection', (socket) => {
     socket.to(roomId).emit('call:end', { from: from || socket.id });
   });
 
-  // Live collaborative storytelling: use story code as room id
   socket.on('story:join', ({ code, userId }) => {
     if (!code) return;
     socket.join(code);
@@ -233,55 +249,95 @@ io.on('connection', (socket) => {
     });
   });
 
-  socket.on('disconnect', () => {});
-
-  // Virtual World presence rooms
   socket.on('world:join', ({ worldId, user }) => {
     if (!worldId) return;
+
     socket.join(`world:${worldId}`);
-    // track presence
+
     const u = user || { id: socket.id };
-    if (!worldPresence.has(worldId)) worldPresence.set(worldId, new Map());
+
+    if (!worldPresence.has(worldId)) {
+      worldPresence.set(worldId, new Map());
+    }
+
     const map = worldPresence.get(worldId);
-    const existing = map.get(u.id) || { user: u, avatar: null, socketIds: new Set() };
+    const existing = map.get(u.id) || {
+      user: u,
+      avatar: null,
+      socketIds: new Set(),
+    };
+
     existing.user = u;
     existing.socketIds.add(socket.id);
     map.set(u.id, existing);
 
-    // send snapshot to the joiner
-    const snapshot = Array.from(map.entries()).map(([uid, v]) => ({ userId: uid, user: v.user, avatar: v.avatar }));
-    socket.emit('world:presence:snapshot', { worldId, peers: snapshot });
+    const snapshot = Array.from(map.entries()).map(([uid, v]) => ({
+      userId: uid,
+      user: v.user,
+      avatar: v.avatar,
+    }));
 
-    const payload = { user: u, socketId: socket.id, ts: new Date().toISOString() };
-    socket.to(`world:${worldId}`).emit('world:presence:join', payload);
+    socket.emit('world:presence:snapshot', {
+      worldId,
+      peers: snapshot,
+    });
+
+    socket.to(`world:${worldId}`).emit('world:presence:join', {
+      user: u,
+      socketId: socket.id,
+      ts: new Date().toISOString(),
+    });
   });
 
   socket.on('world:leave', ({ worldId, user }) => {
     if (!worldId) return;
-    try { socket.leave(`world:${worldId}`); } catch {}
+
+    try {
+      socket.leave(`world:${worldId}`);
+    } catch {}
+
     const u = user || { id: socket.id };
     const map = worldPresence.get(worldId);
+
     if (map) {
       const entry = map.get(u.id);
+
       if (entry) {
         entry.socketIds.delete(socket.id);
-        if (entry.socketIds.size === 0) map.delete(u.id);
+
+        if (entry.socketIds.size === 0) {
+          map.delete(u.id);
+        }
       }
-      if (map.size === 0) worldPresence.delete(worldId);
+
+      if (map.size === 0) {
+        worldPresence.delete(worldId);
+      }
     }
-    const payload = { user: u, socketId: socket.id, ts: new Date().toISOString() };
-    socket.to(`world:${worldId}`).emit('world:presence:leave', payload);
+
+    socket.to(`world:${worldId}`).emit('world:presence:leave', {
+      user: u,
+      socketId: socket.id,
+      ts: new Date().toISOString(),
+    });
   });
 
-  // Relay avatar updates
   socket.on('world:avatar:update', ({ worldId, userId, avatar }) => {
     if (!worldId || !userId) return;
+
     const map = worldPresence.get(worldId);
+
     if (map) {
-      const entry = map.get(userId) || { user: { id: userId }, avatar: null, socketIds: new Set([socket.id]) };
+      const entry = map.get(userId) || {
+        user: { id: userId },
+        avatar: null,
+        socketIds: new Set([socket.id]),
+      };
+
       entry.avatar = avatar || null;
       map.set(userId, entry);
     }
+
     socket.to(`world:${worldId}`).emit('world:avatar:updated', {
       userId,
       avatar,
@@ -290,46 +346,56 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
-    // Remove this socket from any world presence entries
     for (const [worldId, map] of worldPresence.entries()) {
       for (const [uid, entry] of map.entries()) {
         if (entry.socketIds.has(socket.id)) {
           entry.socketIds.delete(socket.id);
+
           if (entry.socketIds.size === 0) {
             map.delete(uid);
-            socket.to(`world:${worldId}`).emit('world:presence:leave', { user: entry.user, socketId: socket.id, ts: new Date().toISOString() });
+
+            socket.to(`world:${worldId}`).emit('world:presence:leave', {
+              user: entry.user,
+              socketId: socket.id,
+              ts: new Date().toISOString(),
+            });
           }
         }
       }
-      if (map.size === 0) worldPresence.delete(worldId);
+
+      if (map.size === 0) {
+        worldPresence.delete(worldId);
+      }
     }
   });
 });
 
 const PORT = process.env.PORT || 4000;
 
-// Connect MongoDB (for JournalEntry and any other Mongoose models)
 (async () => {
   try {
     const conn = await connectDb();
-    if (conn) console.log('✅ MongoDB connected');
-    else console.log('⚠️  MongoDB not configured; server will run with limited persistence');
+
+    if (conn) {
+      console.log('✅ MongoDB connected');
+    } else {
+      console.log('⚠️ MongoDB not configured; server will run with limited persistence');
+    }
   } catch (err) {
     console.error('❌ MongoDB connection failed:', err?.message || err);
-    console.log('⚠️  Server will still run, but Mongo persistence may not work');
+    console.log('⚠️ Server will still run, but Mongo persistence may not work');
   }
 })();
 
 server.listen(PORT, async () => {
   console.log(`API listening on http://localhost:${PORT}`);
-  
-  // Initialize AI in the background
+
   try {
     const { initAI } = await import('./services/aiService.js');
     await initAI();
     console.log('✅ DeepSeek AI initialized successfully');
   } catch (err) {
     console.error('❌ Failed to initialize AI:', err.message);
-    console.log('⚠️  Server is running, but AI features may not work');
+    console.log('⚠️ Server is running, but AI features may not work');
   }
 });
