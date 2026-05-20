@@ -84,7 +84,7 @@ router.get('/', (req, res) => {
               ...(objectIds.length ? [{ _id: { $in: objectIds } }] : []),
             ],
           })
-            .select('externalId name avatar')
+            .select('externalId name avatar verified')
             .lean()
         : [];
 
@@ -98,11 +98,14 @@ router.get('/', (req, res) => {
         const u = byUserId.get(String(p.userId || ''));
         const avatar = (u && u.avatar) ? u.avatar : p.avatar;
         const userName = (u && u.name) ? u.name : p.userName;
+        const verified = (u && u.verified) ? true : false;
         return {
           id: p.id,
           userId: p.userId,
           userName,
           avatar,
+          verified,
+          userVerified: verified,
           content: p.content,
           image: p.image || (Array.isArray(p.images) ? (p.images[0] || '') : ''),
           images: Array.isArray(p.images) ? p.images : [],
