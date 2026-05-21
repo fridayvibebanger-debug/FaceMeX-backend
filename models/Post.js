@@ -17,11 +17,20 @@ const postSchema = new mongoose.Schema(
     userId: { type: String, required: true, index: true },
     userName: { type: String, default: '' },
     avatar: { type: String, default: '' },
+
+    verified: { type: Boolean, default: false },
+    userVerified: { type: Boolean, default: false },
+
     content: { type: String, default: '' },
     image: { type: String, default: '' },
     images: { type: [String], default: [] },
     audio: { type: String, default: '' },
-    mode: { type: String, enum: ['social', 'professional'], default: 'social', index: true },
+    mode: {
+      type: String,
+      enum: ['social', 'professional'],
+      default: 'social',
+      index: true,
+    },
     collabInvites: { type: [String], default: [] },
     collaborators: { type: [String], default: [] },
     likedBy: { type: [String], default: [] },
@@ -32,4 +41,5 @@ const postSchema = new mongoose.Schema(
 
 postSchema.index({ createdAt: -1 });
 
-export const Post = mongoose.models.Post || mongoose.model('Post', postSchema);
+export const Post =
+  mongoose.models.Post || mongoose.model('Post', postSchema);
