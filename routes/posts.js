@@ -13,6 +13,7 @@ const router = Router();
 let posts = [];
 
 await initSqlite();
+
 if (!dbReady) {
   posts = (await loadJSON('posts.json', posts)) || posts;
 }
@@ -26,62 +27,260 @@ async function mongoReady() {
   }
 }
 
+function clean(value) {
+  return String(value || '').trim();
+}
+
 function normalizeMode(mode) {
   return mode === 'professional' ? 'professional' : 'social';
 }
 
 function getCanonicalUserId(user) {
-  return String(user?.externalId || user?._id || user?.id || '').trim();
+  return clean(user?.externalId || user?._id || user?.id || user?.supabaseId || user?.authId);
 }
 
-async function getUserVerifiedStatus(userId) {
+function toObjectIdIfValid(id) {
+  const cleanId = clean(id);
+
+  if (!/^[0-9a-fA-F]{24}$/.test(cleanId)) return null;
+
   try {
-    const cleanId = String(userId || '').trim();
-    if (!cleanId) return false;
-
-    const objectIdFilter = /^[0-9a-fA-F]{24}$/.test(cleanId)
-      ? { _id: new mongoose.Types.ObjectId(cleanId) }
-      : null;
-
-    const foundUser = await User.findOne({
-      $or: [
-        { externalId: cleanId },
-        objectIdFilter,
-      ].filter(Boolean),
-    })
-      .select('verified is_verified userVerified')
-      .lean();
-
-    return (
-      foundUser?.verified === true ||
-      foundUser?.is_verified === true ||
-      foundUser?.userVerified === true
-    );
-  } catch (err) {
-    console.error('Verified lookup failed:', err?.message || err);
-    return false;
+    return new mongoose.Types.ObjectId(cleanId);
+  } catch {
+    return null;
   }
 }
 
+function isVerifiedUser(user) {
+  return Boolean(
+    user?.addons?.verified === true ||
+      user?.verified === true ||
+      user?.userVerified === true ||
+      user?.authorVerified === true ||
+      user?.accountVerified === true ||
+      user?.isVerified === true ||
+      user?.is_verified === true
+  );
+}
+
+async function getUserByAnyId(userId) {
+  try {
+    const cleanId = clean(userId);
+    if (!cleanId) return null;
+
+    const objectId = toObjectIdIfValid(cleanId);
+
+    const user = await User.findOne({
+      $or: [
+        { externalId: cleanId },
+        { id: cleanId },
+        { supabaseId: cleanId },
+        { authId: cleanId },
+        ...(objectId ? [{ _id: objectId }] : []),
+      ],
+    })
+      .select(
+        '_id id externalId supabaseId authId name fullName full_name username email avatar avatarUrl avatar_url addons verified userVerified authorVerified accountVerified isVerified is_verified tier subscriptionTier'
+      )
+      .lean();
+
+    return user || null;
+  } catch (err) {
+    console.error('User lookup failed:', err?.message || err);
+    return null;
+  }
+}
+
+async function getUserVerifiedStatus(userId) {
+  const foundUser = await getUserByAnyId(userId);
+  return isVerifiedUser(foundUser);
+}
+
+async function buildUserMapForPosts(list) {
+  const userIds = Array.from(
+    new Set(
+      (list || [])
+        .map((post) => clean(post.userId || post.user || post.authorId || post.externalId))
+        .filter(Boolean)
+    )
+  );
+
+  if (!userIds.length) return new Map();
+
+  const objectIds = userIds.map(toObjectIdIfValid).filter(Boolean);
+
+  const users = await User.find({
+    $or: [
+      { externalId: { $in: userIds } },
+      { id: { $in: userIds } },
+      { supabaseId: { $in: userIds } },
+      { authId: { $in: userIds } },
+      ...(objectIds.length ? [{ _id: { $in: objectIds } }] : []),
+    ],
+  })
+    .select(
+      '_id id externalId supabaseId authId name fullName full_name username email avatar avatarUrl avatar_url addons verified userVerified authorVerified accountVerified isVerified is_verified tier subscriptionTier'
+    )
+    .lean();
+
+  const map = new Map();
+
+  for (const user of users || []) {
+    const keys = [
+      user?._id,
+      user?.id,
+      user?.externalId,
+      user?.supabaseId,
+      user?.authId,
+    ]
+      .map((x) => clean(x))
+      .filter(Boolean);
+
+    keys.forEach((key) => map.set(key, user));
+  }
+
+  return map;
+}
+
+function getUserDisplayName(user, fallback = '') {
+  return (
+    clean(user?.name) ||
+    clean(user?.fullName) ||
+    clean(user?.full_name) ||
+    clean(user?.username) ||
+    clean(user?.email).split('@')[0] ||
+    clean(fallback) ||
+    'FaceMeX Member'
+  );
+}
+
+function getUserAvatar(user, fallback = '') {
+  return (
+    clean(user?.avatar) ||
+    clean(user?.avatarUrl) ||
+    clean(user?.avatar_url) ||
+    clean(fallback)
+  );
+}
+
+function normalizeComment(comment = {}) {
+  const created =
+    comment.timestamp ||
+    comment.createdAt ||
+    comment.created_at ||
+    new Date().toISOString();
+
+  const content = clean(comment.content || comment.text || '');
+
+  return {
+    id: clean(comment.id) || `c${Date.now()}`,
+    userId: clean(comment.userId),
+    userName: clean(comment.userName) || 'FaceMeX Member',
+    userAvatar: clean(comment.userAvatar || comment.avatar),
+    avatar: clean(comment.userAvatar || comment.avatar),
+    content,
+    text: content,
+    type: comment.type || (comment.voiceUrl ? 'voice' : 'text'),
+    voiceUrl: clean(comment.voiceUrl || comment.voice_url),
+    createdAt: new Date(created).toISOString(),
+    timestamp: new Date(created).toISOString(),
+  };
+}
+
+function shapePost(rawPost, author = null) {
+  const p = typeof rawPost?.toObject === 'function' ? rawPost.toObject() : rawPost || {};
+
+  const authorVerified =
+    isVerifiedUser(author) ||
+    p?.verified === true ||
+    p?.userVerified === true ||
+    p?.authorVerified === true ||
+    p?.accountVerified === true ||
+    p?.isVerified === true ||
+    p?.is_verified === true;
+
+  const userName = getUserDisplayName(author, p.userName);
+  const avatar = getUserAvatar(author, p.userAvatar || p.avatar);
+
+  const images = Array.isArray(p.images) ? p.images.filter(Boolean) : [];
+  const firstImage = clean(p.image) || images[0] || '';
+
+  const likedBy = Array.isArray(p.likedBy) ? p.likedBy.map(String) : [];
+  const comments = Array.isArray(p.comments) ? p.comments.map(normalizeComment) : [];
+
+  const createdAt = p.createdAt
+    ? new Date(p.createdAt).toISOString()
+    : p.timestamp
+      ? new Date(p.timestamp).toISOString()
+      : new Date().toISOString();
+
+  return {
+    id: clean(p.id || p._id || `p${Date.now()}`),
+    _id: p._id,
+    userId: clean(p.userId || p.user || p.authorId),
+    userName,
+    avatar,
+    userAvatar: avatar,
+
+    verified: authorVerified,
+    userVerified: authorVerified,
+    authorVerified,
+    accountVerified: authorVerified,
+    isVerified: authorVerified,
+
+    content: clean(p.content),
+    image: firstImage,
+    images,
+    audio: clean(p.audio),
+    video: clean(p.video || p.videoUrl),
+    videoUrl: clean(p.videoUrl || p.video),
+
+    documents: Array.isArray(p.documents) ? p.documents : [],
+    documentUrl: clean(p.documentUrl || p.document_url),
+    documentPages: Array.isArray(p.documentPages)
+      ? p.documentPages
+      : Array.isArray(p.document_pages)
+        ? p.document_pages
+        : [],
+
+    mode: normalizeMode(p.mode),
+    collabInvites: Array.isArray(p.collabInvites) ? p.collabInvites.map(String) : [],
+    collaborators: Array.isArray(p.collaborators) ? p.collaborators.map(String) : [],
+
+    likedBy,
+    likes: likedBy.length,
+    shares: Number(p.shares || 0),
+
+    comments,
+    createdAt,
+    timestamp: createdAt,
+  };
+}
+
 function isOwner(postUserId, user) {
-  const puid = String(postUserId || '').trim();
-  if (!puid) return false;
+  const postOwnerId = clean(postUserId);
+  if (!postOwnerId) return false;
 
   const canonical = getCanonicalUserId(user);
-  const mongoId = String(user?._id || '').trim();
+  const mongoId = clean(user?._id);
+  const supabaseId = clean(user?.id);
+  const externalId = clean(user?.externalId);
 
-  return (canonical && puid === canonical) || (mongoId && puid === mongoId);
+  return Boolean(
+    (canonical && postOwnerId === canonical) ||
+      (mongoId && postOwnerId === mongoId) ||
+      (supabaseId && postOwnerId === supabaseId) ||
+      (externalId && postOwnerId === externalId)
+  );
 }
 
 function isCollaborator(post, user) {
   const canonical = getCanonicalUserId(user);
   if (!canonical) return false;
 
-  const collaborators = Array.isArray(post?.collaborators)
-    ? post.collaborators
-    : [];
+  const collaborators = Array.isArray(post?.collaborators) ? post.collaborators : [];
 
-  return collaborators.map((x) => String(x)).includes(String(canonical));
+  return collaborators.map(String).includes(String(canonical));
 }
 
 function canEdit(post, user) {
@@ -97,7 +296,7 @@ router.get('/', (req, res) => {
           ? 'social'
           : null;
 
-    const skillRaw = (req.query.skill || '').toString().trim();
+    const skillRaw = clean(req.query.skill);
     const skill = skillRaw ? skillRaw.toLowerCase() : '';
 
     const matchesSkill = (content = '') => {
@@ -105,96 +304,27 @@ router.get('/', (req, res) => {
 
       const c = String(content).toLowerCase();
 
-      return (
-        c.includes(`#${skill}`) ||
-        c.split(/[^a-z0-9+#]/i).includes(skill)
-      );
+      return c.includes(`#${skill}`) || c.split(/[^a-z0-9+#]/i).includes(skill);
     };
 
     if (await mongoReady()) {
       const query = {};
       if (mode) query.mode = mode;
 
-      const list = await Post.find(query)
-        .sort({ createdAt: -1 })
-        .limit(200)
-        .lean();
+      const list = await Post.find(query).sort({ createdAt: -1 }).limit(200).lean();
 
-      const userIds = Array.from(
-        new Set(
-          (list || [])
-            .map((p) => String(p.userId || '').trim())
-            .filter(Boolean)
-        )
-      );
+      const userMap = await buildUserMapForPosts(list);
 
-      const objectIds = userIds
-        .filter((id) => /^[0-9a-fA-F]{24}$/.test(id))
-        .map((id) => new mongoose.Types.ObjectId(id));
-
-      const users = userIds.length
-        ? await User.find({
-            $or: [
-              { externalId: { $in: userIds } },
-              ...(objectIds.length ? [{ _id: { $in: objectIds } }] : []),
-            ],
-          })
-            .select('externalId name avatar verified is_verified userVerified')
-            .lean()
-        : [];
-
-      const byUserId = new Map();
-
-      for (const u of users || []) {
-        if (u.externalId) byUserId.set(String(u.externalId), u);
-        if (u._id) byUserId.set(String(u._id), u);
-      }
-
-      const shaped = (list || []).map((p) => {
-        const u = byUserId.get(String(p.userId || ''));
-
-        const avatar = u?.avatar ? u.avatar : p.avatar;
-        const userName = u?.name ? u.name : p.userName;
-
-        const verified =
-          u?.verified === true ||
-          u?.is_verified === true ||
-          u?.userVerified === true ||
-          p?.verified === true ||
-          p?.userVerified === true;
-
-        return {
-          id: p.id,
-          userId: p.userId,
-          userName,
-          avatar,
-          verified,
-          userVerified: verified,
-          content: p.content,
-          image: p.image || (Array.isArray(p.images) ? p.images[0] || '' : ''),
-          images: Array.isArray(p.images) ? p.images : [],
-          audio: p.audio || '',
-          mode: normalizeMode(p.mode),
-          collabInvites: Array.isArray(p.collabInvites)
-            ? p.collabInvites
-            : [],
-          collaborators: Array.isArray(p.collaborators)
-            ? p.collaborators
-            : [],
-          likedBy: Array.isArray(p.likedBy) ? p.likedBy : [],
-          likes: Array.isArray(p.likedBy) ? p.likedBy.length : 0,
-          comments: Array.isArray(p.comments) ? p.comments : [],
-          createdAt: p.createdAt
-            ? new Date(p.createdAt).toISOString()
-            : new Date().toISOString(),
-        };
+      const shaped = (list || []).map((post) => {
+        const author = userMap.get(clean(post.userId));
+        return shapePost(post, author);
       });
 
-      let filtered = mode ? shaped.filter((p) => p.mode === mode) : shaped;
+      let filtered = mode ? shaped.filter((post) => post.mode === mode) : shaped;
 
       if (skill) {
         filtered = filtered.filter(
-          (p) => p.mode === 'professional' && matchesSkill(p.content)
+          (post) => post.mode === 'professional' && matchesSkill(post.content)
         );
       }
 
@@ -204,213 +334,66 @@ router.get('/', (req, res) => {
     if (dbReady) {
       const list = postsRepo.list();
 
-      const normalized = list.map((p) => ({
-        ...p,
-        mode: p.mode === 'professional' ? 'professional' : 'social',
+      const normalized = list.map((post) => ({
+        ...shapePost(post),
+        mode: normalizeMode(post.mode),
       }));
 
       let filtered = mode
-        ? normalized.filter((p) => p.mode === mode)
+        ? normalized.filter((post) => post.mode === mode)
         : normalized;
 
       if (skill) {
         filtered = filtered.filter(
-          (p) => p.mode === 'professional' && matchesSkill(p.content)
+          (post) => post.mode === 'professional' && matchesSkill(post.content)
         );
       }
 
       return res.json(filtered);
     }
 
-    const shaped = posts.map((p) => ({
-      ...p,
-      mode: p.mode === 'professional' ? 'professional' : 'social',
-      likes: Array.isArray(p.likedBy) ? p.likedBy.length : p.likes || 0,
-    }));
+    const shaped = posts.map((post) => shapePost(post));
 
-    let filtered = mode ? shaped.filter((p) => p.mode === mode) : shaped;
+    let filtered = mode ? shaped.filter((post) => post.mode === mode) : shaped;
 
     if (skill) {
       filtered = filtered.filter(
-        (p) => p.mode === 'professional' && matchesSkill(p.content)
+        (post) => post.mode === 'professional' && matchesSkill(post.content)
       );
     }
 
     return res.json(filtered);
-  })().catch(() => res.status(500).json({ error: 'server_error' }));
-});
-
-router.post('/:id/collab/invite', requireAuth, (req, res) => {
-  (async () => {
-    const { id } = req.params;
-    const inviteeIdRaw = String(req.body?.userId || '').trim();
-
-    if (!inviteeIdRaw) {
-      return res.status(400).json({ error: 'userId_required' });
-    }
-
-    const inviterId = getCanonicalUserId(req.user);
-
-    if (!(await mongoReady())) {
-      return res.status(501).json({ error: 'not_supported' });
-    }
-
-    const doc = await Post.findOne({ id });
-
-    if (!doc) return res.status(404).json({ error: 'Not found' });
-    if (!isOwner(doc.userId, req.user)) {
-      return res.status(403).json({ error: 'Forbidden' });
-    }
-
-    if (String(inviteeIdRaw) === String(inviterId)) {
-      return res.status(400).json({ error: 'cannot_invite_self' });
-    }
-
-    const invites = Array.isArray(doc.collabInvites)
-      ? doc.collabInvites.map(String)
-      : [];
-
-    const collaborators = Array.isArray(doc.collaborators)
-      ? doc.collaborators.map(String)
-      : [];
-
-    if (collaborators.includes(String(inviteeIdRaw))) {
-      return res.json({ ok: true, status: 'already_collaborator' });
-    }
-
-    if (!invites.includes(String(inviteeIdRaw))) {
-      invites.push(String(inviteeIdRaw));
-    }
-
-    doc.collabInvites = invites;
-    await doc.save();
-
-    try {
-      createNotification(req, {
-        toUserId: String(inviteeIdRaw),
-        fromUserId: String(inviterId),
-        type: 'collab_invite',
-        title: 'Collaboration Invite',
-        message: `${String(req.user?.name || 'Someone')} invited you to collaborate on a post`,
-        actionUrl: '/feed',
-        meta: { postId: id },
-      }).catch(() => {});
-    } catch {}
-
-    return res.json({
-      ok: true,
-      collabInvites: doc.collabInvites,
-      collaborators: doc.collaborators,
-    });
-  })().catch(() => res.status(500).json({ error: 'server_error' }));
-});
-
-router.post('/:id/collab/accept', requireAuth, (req, res) => {
-  (async () => {
-    const { id } = req.params;
-    const userId = getCanonicalUserId(req.user);
-
-    if (!(await mongoReady())) {
-      return res.status(501).json({ error: 'not_supported' });
-    }
-
-    const doc = await Post.findOne({ id });
-    if (!doc) return res.status(404).json({ error: 'Not found' });
-
-    const invites = Array.isArray(doc.collabInvites)
-      ? doc.collabInvites.map(String)
-      : [];
-
-    if (!invites.includes(String(userId))) {
-      return res.status(403).json({ error: 'No invite' });
-    }
-
-    const nextInvites = invites.filter((x) => x !== String(userId));
-    const collaborators = Array.isArray(doc.collaborators)
-      ? doc.collaborators.map(String)
-      : [];
-
-    if (!collaborators.includes(String(userId))) {
-      collaborators.push(String(userId));
-    }
-
-    doc.collabInvites = nextInvites;
-    doc.collaborators = collaborators;
-
-    await doc.save();
-
-    try {
-      createNotification(req, {
-        toUserId: String(doc.userId),
-        fromUserId: String(userId),
-        type: 'collab_accept',
-        title: 'Collaboration Accepted',
-        message: `${String(req.user?.name || 'Someone')} accepted your collaboration invite`,
-        actionUrl: '/feed',
-        meta: { postId: id },
-      }).catch(() => {});
-    } catch {}
-
-    return res.json({
-      ok: true,
-      collabInvites: doc.collabInvites,
-      collaborators: doc.collaborators,
-    });
-  })().catch(() => res.status(500).json({ error: 'server_error' }));
-});
-
-router.post('/:id/collab/reject', requireAuth, (req, res) => {
-  (async () => {
-    const { id } = req.params;
-    const userId = getCanonicalUserId(req.user);
-
-    if (!(await mongoReady())) {
-      return res.status(501).json({ error: 'not_supported' });
-    }
-
-    const doc = await Post.findOne({ id });
-    if (!doc) return res.status(404).json({ error: 'Not found' });
-
-    const invites = Array.isArray(doc.collabInvites)
-      ? doc.collabInvites.map(String)
-      : [];
-
-    if (!invites.includes(String(userId))) {
-      return res.status(403).json({ error: 'No invite' });
-    }
-
-    doc.collabInvites = invites.filter((x) => x !== String(userId));
-
-    await doc.save();
-
-    return res.json({
-      ok: true,
-      collabInvites: doc.collabInvites,
-      collaborators: doc.collaborators,
-    });
-  })().catch(() => res.status(500).json({ error: 'server_error' }));
+  })().catch((err) => {
+    console.error('Get posts error:', err?.message || err);
+    res.status(500).json({ error: 'server_error' });
+  });
 });
 
 router.post('/', requireAuth, (req, res) => {
   (async () => {
-    const { content, image, images, audio, mode } = req.body;
+    const {
+      content = '',
+      image = '',
+      images = [],
+      audio = '',
+      video = '',
+      videoUrl = '',
+      mode = 'social',
+      documents = [],
+      documentUrl = '',
+      documentPages = [],
+    } = req.body || {};
 
-    const safeImages = Array.isArray(images)
-      ? images.filter(Boolean).slice(0, 5)
-      : [];
-
+    const safeImages = Array.isArray(images) ? images.filter(Boolean).slice(0, 5) : [];
     const firstImage = safeImages[0] || image || '';
     const id = `p${Date.now()}`;
 
     const currentUserId = getCanonicalUserId(req.user);
-    const currentUserName = String(req.user?.name || '');
-    const currentUserAvatar = String(req.user?.avatar || '');
+    const fullUser = await getUserByAnyId(currentUserId);
 
-    const currentUserVerified =
-      req.user?.verified === true ||
-      req.user?.is_verified === true ||
-      req.user?.userVerified === true ||
-      (await getUserVerifiedStatus(currentUserId));
+    const currentUserName = getUserDisplayName(fullUser || req.user, req.user?.name);
+    const currentUserAvatar = getUserAvatar(fullUser || req.user, req.user?.avatar);
+    const currentUserVerified = isVerifiedUser(fullUser) || isVerifiedUser(req.user);
 
     if (await mongoReady()) {
       const created = await Post.create({
@@ -418,42 +401,34 @@ router.post('/', requireAuth, (req, res) => {
         userId: currentUserId,
         userName: currentUserName,
         avatar: currentUserAvatar,
+        userAvatar: currentUserAvatar,
+
         verified: currentUserVerified,
         userVerified: currentUserVerified,
-        content: content || '',
+        authorVerified: currentUserVerified,
+        accountVerified: currentUserVerified,
+        isVerified: currentUserVerified,
+
+        content: clean(content),
         image: firstImage || '',
         images: safeImages,
         audio: audio || '',
+        video: video || videoUrl || '',
+        videoUrl: videoUrl || video || '',
+        documents: Array.isArray(documents) ? documents : [],
+        documentUrl: documentUrl || '',
+        documentPages: Array.isArray(documentPages) ? documentPages : [],
+
         mode: normalizeMode(mode),
         collabInvites: [],
         collaborators: [],
         likedBy: [],
+        likes: 0,
+        shares: 0,
         comments: [],
       });
 
-      return res.status(201).json({
-        id: created.id,
-        userId: created.userId,
-        userName: created.userName,
-        avatar: created.avatar,
-        verified: created.verified === true,
-        userVerified: created.userVerified === true,
-        content: created.content,
-        image: created.image,
-        images: created.images,
-        audio: created.audio,
-        collabInvites: Array.isArray(created.collabInvites)
-          ? created.collabInvites
-          : [],
-        collaborators: Array.isArray(created.collaborators)
-          ? created.collaborators
-          : [],
-        likedBy: created.likedBy,
-        comments: created.comments,
-        createdAt: created.createdAt.toISOString(),
-        mode: normalizeMode(created.mode),
-        likes: 0,
-      });
+      return res.status(201).json(shapePost(created, fullUser));
     }
 
     if (dbReady) {
@@ -462,20 +437,19 @@ router.post('/', requireAuth, (req, res) => {
         userId: currentUserId,
         userName: currentUserName,
         avatar: currentUserAvatar,
+        userAvatar: currentUserAvatar,
         verified: currentUserVerified,
         userVerified: currentUserVerified,
-        content: content || '',
+        authorVerified: currentUserVerified,
+        accountVerified: currentUserVerified,
+        content: clean(content),
         image: firstImage || '',
         images: safeImages,
         audio: audio || '',
-        mode: mode === 'professional' ? 'professional' : 'social',
+        mode: normalizeMode(mode),
       });
 
-      return res.status(201).json({
-        ...created,
-        verified: currentUserVerified,
-        userVerified: currentUserVerified,
-      });
+      return res.status(201).json(shapePost(created));
     }
 
     const post = {
@@ -483,25 +457,32 @@ router.post('/', requireAuth, (req, res) => {
       userId: currentUserId,
       userName: currentUserName,
       avatar: currentUserAvatar,
+      userAvatar: currentUserAvatar,
       verified: currentUserVerified,
       userVerified: currentUserVerified,
-      content: content || '',
+      authorVerified: currentUserVerified,
+      accountVerified: currentUserVerified,
+      content: clean(content),
       image: firstImage || '',
       images: safeImages,
       audio: audio || '',
+      video: video || videoUrl || '',
+      videoUrl: videoUrl || video || '',
+      documents: Array.isArray(documents) ? documents : [],
+      documentUrl: documentUrl || '',
+      documentPages: Array.isArray(documentPages) ? documentPages : [],
       likedBy: [],
+      likes: 0,
+      shares: 0,
       comments: [],
       createdAt: new Date().toISOString(),
-      mode: mode === 'professional' ? 'professional' : 'social',
+      mode: normalizeMode(mode),
     };
 
     posts.unshift(post);
     saveJSON('posts.json', posts).catch(() => {});
 
-    return res.status(201).json({
-      ...post,
-      likes: 0,
-    });
+    return res.status(201).json(shapePost(post));
   })().catch((err) => {
     console.error('Create post error:', err?.message || err);
     res.status(500).json({ error: 'server_error' });
@@ -512,7 +493,7 @@ router.post('/:id/like', requireAuth, (req, res) => {
   (async () => {
     const { id } = req.params;
     const userId = getCanonicalUserId(req.user);
-    const userName = String(req.user?.name || 'Someone');
+    const userName = clean(req.user?.name) || 'Someone';
 
     if (await mongoReady()) {
       const doc = await Post.findOne({ id });
@@ -520,7 +501,7 @@ router.post('/:id/like', requireAuth, (req, res) => {
 
       if (!Array.isArray(doc.likedBy)) doc.likedBy = [];
 
-      const alreadyLiked = doc.likedBy.includes(userId);
+      const alreadyLiked = doc.likedBy.map(String).includes(String(userId));
 
       if (alreadyLiked) {
         doc.likedBy = doc.likedBy.filter((x) => String(x) !== String(userId));
@@ -531,8 +512,8 @@ router.post('/:id/like', requireAuth, (req, res) => {
       await doc.save();
 
       try {
-        const likedNow = doc.likedBy.includes(userId);
-        const ownerId = String(doc.userId || '');
+        const likedNow = doc.likedBy.map(String).includes(String(userId));
+        const ownerId = clean(doc.userId);
 
         if (likedNow && ownerId && ownerId !== userId) {
           createNotification(req, {
@@ -547,36 +528,14 @@ router.post('/:id/like', requireAuth, (req, res) => {
         }
       } catch {}
 
-      const verified =
-        doc.verified === true ||
-        doc.userVerified === true ||
-        (await getUserVerifiedStatus(doc.userId));
-
-      return res.json({
-        id: doc.id,
-        userId: doc.userId,
-        userName: doc.userName,
-        avatar: doc.avatar,
-        verified,
-        userVerified: verified,
-        content: doc.content,
-        image: doc.image || (Array.isArray(doc.images) ? doc.images[0] || '' : ''),
-        images: Array.isArray(doc.images) ? doc.images : [],
-        audio: doc.audio || '',
-        mode: normalizeMode(doc.mode),
-        likedBy: Array.isArray(doc.likedBy) ? doc.likedBy : [],
-        likes: Array.isArray(doc.likedBy) ? doc.likedBy.length : 0,
-        comments: Array.isArray(doc.comments) ? doc.comments : [],
-        createdAt: doc.createdAt
-          ? new Date(doc.createdAt).toISOString()
-          : new Date().toISOString(),
-      });
+      const author = await getUserByAnyId(doc.userId);
+      return res.json(shapePost(doc, author));
     }
 
     if (dbReady) {
       const updated = postsRepo.toggleLike(id, userId);
       if (!updated) return res.status(404).json({ error: 'Not found' });
-      return res.json(updated);
+      return res.json(shapePost(updated));
     }
 
     const p = posts.find((x) => x.id === id);
@@ -594,28 +553,80 @@ router.post('/:id/like', requireAuth, (req, res) => {
 
     saveJSON('posts.json', posts).catch(() => {});
 
-    return res.json({
-      ...p,
-      likes: p.likedBy.length,
-    });
-  })().catch(() => res.status(500).json({ error: 'server_error' }));
+    return res.json(shapePost(p));
+  })().catch((err) => {
+    console.error('Like post error:', err?.message || err);
+    res.status(500).json({ error: 'server_error' });
+  });
+});
+
+router.post('/:id/share', requireAuth, (req, res) => {
+  (async () => {
+    const { id } = req.params;
+    const userId = getCanonicalUserId(req.user);
+
+    if (await mongoReady()) {
+      const doc = await Post.findOne({ id });
+      if (!doc) return res.status(404).json({ error: 'Not found' });
+
+      doc.shares = Number(doc.shares || 0) + 1;
+      await doc.save();
+
+      try {
+        const ownerId = clean(doc.userId);
+
+        if (ownerId && ownerId !== userId) {
+          createNotification(req, {
+            toUserId: ownerId,
+            fromUserId: userId,
+            type: 'share',
+            title: 'Post Shared',
+            message: `${clean(req.user?.name) || 'Someone'} shared your post`,
+            actionUrl: '/feed',
+            meta: { postId: id },
+          }).catch(() => {});
+        }
+      } catch {}
+
+      const author = await getUserByAnyId(doc.userId);
+      return res.json(shapePost(doc, author));
+    }
+
+    const p = posts.find((x) => x.id === id);
+    if (!p) return res.status(404).json({ error: 'Not found' });
+
+    p.shares = Number(p.shares || 0) + 1;
+    saveJSON('posts.json', posts).catch(() => {});
+
+    return res.json(shapePost(p));
+  })().catch((err) => {
+    console.error('Share post error:', err?.message || err);
+    res.status(500).json({ error: 'server_error' });
+  });
 });
 
 router.post('/:id/comment', requireAuth, (req, res) => {
   (async () => {
     const { id } = req.params;
-    const { text } = req.body;
+    const text = clean(req.body?.text || req.body?.content);
+    const voiceUrl = clean(req.body?.voiceUrl || req.body?.voice_url);
+    const type = voiceUrl ? 'voice' : 'text';
 
     const userId = getCanonicalUserId(req.user);
-    const userName = String(req.user?.name || '');
+    const fullUser = await getUserByAnyId(userId);
 
-    const comment = {
+    const comment = normalizeComment({
       id: `c${Date.now()}`,
       userId,
-      userName,
-      text: text || '',
+      userName: getUserDisplayName(fullUser || req.user, req.user?.name),
+      userAvatar: getUserAvatar(fullUser || req.user, req.user?.avatar),
+      content: text,
+      text,
+      type,
+      voiceUrl,
       createdAt: new Date().toISOString(),
-    };
+      timestamp: new Date().toISOString(),
+    });
 
     if (await mongoReady()) {
       const doc = await Post.findOne({ id });
@@ -627,15 +638,15 @@ router.post('/:id/comment', requireAuth, (req, res) => {
       await doc.save();
 
       try {
-        const ownerId = String(doc.userId || '');
+        const ownerId = clean(doc.userId);
 
         if (ownerId && ownerId !== userId) {
           createNotification(req, {
             toUserId: ownerId,
             fromUserId: userId,
-            type: 'comment',
-            title: 'New Comment',
-            message: `${userName || 'Someone'} commented on your post`,
+            type: type === 'voice' ? 'voice_comment' : 'comment',
+            title: type === 'voice' ? 'New Voice Reply' : 'New Comment',
+            message: `${comment.userName || 'Someone'} replied to your post`,
             actionUrl: '/feed',
             meta: { postId: id, commentId: comment.id },
           }).catch(() => {});
@@ -649,33 +660,52 @@ router.post('/:id/comment', requireAuth, (req, res) => {
       const c = postsRepo.addComment(id, {
         id: comment.id,
         userId,
-        userName,
-        text: comment.text,
+        userName: comment.userName,
+        text: comment.content,
       });
 
       if (!c) return res.status(404).json({ error: 'Not found' });
 
-      return res.status(201).json(c);
+      return res.status(201).json(normalizeComment(c));
     }
 
     const p = posts.find((x) => x.id === id);
     if (!p) return res.status(404).json({ error: 'Not found' });
+
+    if (!Array.isArray(p.comments)) p.comments = [];
 
     p.comments.push(comment);
 
     saveJSON('posts.json', posts).catch(() => {});
 
     return res.status(201).json(comment);
-  })().catch(() => res.status(500).json({ error: 'server_error' }));
+  })().catch((err) => {
+    console.error('Comment error:', err?.message || err);
+    res.status(500).json({ error: 'server_error' });
+  });
+});
+
+router.post('/:id/voice-comment', requireAuth, (req, res) => {
+  req.body = {
+    ...(req.body || {}),
+    voiceUrl: req.body?.voiceUrl || req.body?.audio || req.body?.url,
+  };
+
+  return router.handle(
+    {
+      ...req,
+      method: 'POST',
+      url: `/${req.params.id}/comment`,
+      originalUrl: req.originalUrl,
+    },
+    res
+  );
 });
 
 router.patch('/:id', requireAuth, (req, res) => {
   (async () => {
     const { id } = req.params;
-    const { content } = req.body;
-
-    const userId = getCanonicalUserId(req.user);
-    const nextContent = (content || '').toString();
+    const nextContent = clean(req.body?.content);
 
     if (await mongoReady()) {
       const doc = await Post.findOne({ id });
@@ -688,36 +718,8 @@ router.patch('/:id', requireAuth, (req, res) => {
       doc.content = nextContent || doc.content;
       await doc.save();
 
-      const verified =
-        doc.verified === true ||
-        doc.userVerified === true ||
-        (await getUserVerifiedStatus(doc.userId));
-
-      return res.json({
-        id: doc.id,
-        userId: doc.userId,
-        userName: doc.userName,
-        avatar: doc.avatar,
-        verified,
-        userVerified: verified,
-        content: doc.content,
-        image: doc.image || (Array.isArray(doc.images) ? doc.images[0] || '' : ''),
-        images: Array.isArray(doc.images) ? doc.images : [],
-        audio: doc.audio || '',
-        mode: normalizeMode(doc.mode),
-        collabInvites: Array.isArray(doc.collabInvites)
-          ? doc.collabInvites
-          : [],
-        collaborators: Array.isArray(doc.collaborators)
-          ? doc.collaborators
-          : [],
-        likedBy: Array.isArray(doc.likedBy) ? doc.likedBy : [],
-        likes: Array.isArray(doc.likedBy) ? doc.likedBy.length : 0,
-        comments: Array.isArray(doc.comments) ? doc.comments : [],
-        createdAt: doc.createdAt
-          ? new Date(doc.createdAt).toISOString()
-          : new Date().toISOString(),
-      });
+      const author = await getUserByAnyId(doc.userId);
+      return res.json(shapePost(doc, author));
     }
 
     if (dbReady) {
@@ -725,30 +727,22 @@ router.patch('/:id', requireAuth, (req, res) => {
 
       if (!p) return res.status(404).json({ error: 'Not found' });
 
-      if (
-        String(p.userId || '') !== String(userId) &&
-        String(p.userId || '') !== String(req.user?._id || '')
-      ) {
+      if (!isOwner(p.userId, req.user)) {
         return res.status(403).json({ error: 'Forbidden' });
       }
 
-      postsRepo._db
-        .prepare(`UPDATE posts SET content=? WHERE id=?`)
-        .run(nextContent, id);
+      postsRepo._db.prepare(`UPDATE posts SET content=? WHERE id=?`).run(nextContent, id);
 
       const updated = postsRepo.get(id);
 
-      return res.json(updated);
+      return res.json(shapePost(updated));
     }
 
     const p = posts.find((x) => x.id === id);
 
     if (!p) return res.status(404).json({ error: 'Not found' });
 
-    if (
-      String(p.userId || '') !== String(userId) &&
-      String(p.userId || '') !== String(req.user?._id || '')
-    ) {
+    if (!isOwner(p.userId, req.user)) {
       return res.status(403).json({ error: 'Forbidden' });
     }
 
@@ -756,17 +750,16 @@ router.patch('/:id', requireAuth, (req, res) => {
 
     saveJSON('posts.json', posts).catch(() => {});
 
-    return res.json({
-      ...p,
-      likes: Array.isArray(p.likedBy) ? p.likedBy.length : p.likes || 0,
-    });
-  })().catch(() => res.status(500).json({ error: 'server_error' }));
+    return res.json(shapePost(p));
+  })().catch((err) => {
+    console.error('Edit post error:', err?.message || err);
+    res.status(500).json({ error: 'server_error' });
+  });
 });
 
 router.delete('/:id', requireAuth, (req, res) => {
   (async () => {
     const { id } = req.params;
-    const userId = getCanonicalUserId(req.user);
 
     if (await mongoReady()) {
       const doc = await Post.findOne({ id });
@@ -787,10 +780,7 @@ router.delete('/:id', requireAuth, (req, res) => {
 
       if (!p) return res.status(404).json({ error: 'Not found' });
 
-      if (
-        String(p.userId || '') !== String(userId) &&
-        String(p.userId || '') !== String(req.user?._id || '')
-      ) {
+      if (!isOwner(p.userId, req.user)) {
         return res.status(403).json({ error: 'Forbidden' });
       }
 
@@ -805,10 +795,7 @@ router.delete('/:id', requireAuth, (req, res) => {
 
     if (idx === -1) return res.status(404).json({ error: 'Not found' });
 
-    if (
-      String(posts[idx].userId || '') !== String(userId) &&
-      String(posts[idx].userId || '') !== String(req.user?._id || '')
-    ) {
+    if (!isOwner(posts[idx].userId, req.user)) {
       return res.status(403).json({ error: 'Forbidden' });
     }
 
@@ -816,13 +803,166 @@ router.delete('/:id', requireAuth, (req, res) => {
     saveJSON('posts.json', posts).catch(() => {});
 
     return res.json({ ok: true });
-  })().catch(() => res.status(500).json({ error: 'server_error' }));
+  })().catch((err) => {
+    console.error('Delete post error:', err?.message || err);
+    res.status(500).json({ error: 'server_error' });
+  });
+});
+
+router.post('/:id/collab/invite', requireAuth, (req, res) => {
+  (async () => {
+    const { id } = req.params;
+    const inviteeIdRaw = clean(req.body?.userId);
+
+    if (!inviteeIdRaw) {
+      return res.status(400).json({ error: 'userId_required' });
+    }
+
+    const inviterId = getCanonicalUserId(req.user);
+
+    if (!(await mongoReady())) {
+      return res.status(501).json({ error: 'not_supported' });
+    }
+
+    const doc = await Post.findOne({ id });
+
+    if (!doc) return res.status(404).json({ error: 'Not found' });
+
+    if (!isOwner(doc.userId, req.user)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    if (String(inviteeIdRaw) === String(inviterId)) {
+      return res.status(400).json({ error: 'cannot_invite_self' });
+    }
+
+    const invites = Array.isArray(doc.collabInvites) ? doc.collabInvites.map(String) : [];
+    const collaborators = Array.isArray(doc.collaborators) ? doc.collaborators.map(String) : [];
+
+    if (collaborators.includes(String(inviteeIdRaw))) {
+      return res.json({ ok: true, status: 'already_collaborator' });
+    }
+
+    if (!invites.includes(String(inviteeIdRaw))) {
+      invites.push(String(inviteeIdRaw));
+    }
+
+    doc.collabInvites = invites;
+    await doc.save();
+
+    try {
+      createNotification(req, {
+        toUserId: String(inviteeIdRaw),
+        fromUserId: String(inviterId),
+        type: 'collab_invite',
+        title: 'Collaboration Invite',
+        message: `${clean(req.user?.name) || 'Someone'} invited you to collaborate on a post`,
+        actionUrl: '/feed',
+        meta: { postId: id },
+      }).catch(() => {});
+    } catch {}
+
+    return res.json({
+      ok: true,
+      collabInvites: doc.collabInvites,
+      collaborators: doc.collaborators,
+    });
+  })().catch((err) => {
+    console.error('Collab invite error:', err?.message || err);
+    res.status(500).json({ error: 'server_error' });
+  });
+});
+
+router.post('/:id/collab/accept', requireAuth, (req, res) => {
+  (async () => {
+    const { id } = req.params;
+    const userId = getCanonicalUserId(req.user);
+
+    if (!(await mongoReady())) {
+      return res.status(501).json({ error: 'not_supported' });
+    }
+
+    const doc = await Post.findOne({ id });
+    if (!doc) return res.status(404).json({ error: 'Not found' });
+
+    const invites = Array.isArray(doc.collabInvites) ? doc.collabInvites.map(String) : [];
+
+    if (!invites.includes(String(userId))) {
+      return res.status(403).json({ error: 'No invite' });
+    }
+
+    const nextInvites = invites.filter((x) => x !== String(userId));
+    const collaborators = Array.isArray(doc.collaborators) ? doc.collaborators.map(String) : [];
+
+    if (!collaborators.includes(String(userId))) {
+      collaborators.push(String(userId));
+    }
+
+    doc.collabInvites = nextInvites;
+    doc.collaborators = collaborators;
+
+    await doc.save();
+
+    try {
+      createNotification(req, {
+        toUserId: String(doc.userId),
+        fromUserId: String(userId),
+        type: 'collab_accept',
+        title: 'Collaboration Accepted',
+        message: `${clean(req.user?.name) || 'Someone'} accepted your collaboration invite`,
+        actionUrl: '/feed',
+        meta: { postId: id },
+      }).catch(() => {});
+    } catch {}
+
+    return res.json({
+      ok: true,
+      collabInvites: doc.collabInvites,
+      collaborators: doc.collaborators,
+    });
+  })().catch((err) => {
+    console.error('Collab accept error:', err?.message || err);
+    res.status(500).json({ error: 'server_error' });
+  });
+});
+
+router.post('/:id/collab/reject', requireAuth, (req, res) => {
+  (async () => {
+    const { id } = req.params;
+    const userId = getCanonicalUserId(req.user);
+
+    if (!(await mongoReady())) {
+      return res.status(501).json({ error: 'not_supported' });
+    }
+
+    const doc = await Post.findOne({ id });
+    if (!doc) return res.status(404).json({ error: 'Not found' });
+
+    const invites = Array.isArray(doc.collabInvites) ? doc.collabInvites.map(String) : [];
+
+    if (!invites.includes(String(userId))) {
+      return res.status(403).json({ error: 'No invite' });
+    }
+
+    doc.collabInvites = invites.filter((x) => x !== String(userId));
+
+    await doc.save();
+
+    return res.json({
+      ok: true,
+      collabInvites: doc.collabInvites,
+      collaborators: doc.collaborators,
+    });
+  })().catch((err) => {
+    console.error('Collab reject error:', err?.message || err);
+    res.status(500).json({ error: 'server_error' });
+  });
 });
 
 router.patch('/:id/comment/:commentId', requireAuth, (req, res) => {
   (async () => {
     const { id, commentId } = req.params;
-    const { text } = req.body;
+    const text = clean(req.body?.text || req.body?.content);
 
     const userId = getCanonicalUserId(req.user);
 
@@ -831,9 +971,7 @@ router.patch('/:id/comment/:commentId', requireAuth, (req, res) => {
       if (!doc) return res.status(404).json({ error: 'Not found' });
 
       const comments = Array.isArray(doc.comments) ? doc.comments : [];
-      const idx = comments.findIndex(
-        (c) => String(c?.id) === String(commentId)
-      );
+      const idx = comments.findIndex((comment) => String(comment?.id) === String(commentId));
 
       if (idx === -1) {
         return res.status(404).json({ error: 'Comment not found' });
@@ -843,12 +981,13 @@ router.patch('/:id/comment/:commentId', requireAuth, (req, res) => {
         return res.status(403).json({ error: 'Forbidden' });
       }
 
-      comments[idx].text = (text || comments[idx].text || '').toString();
+      comments[idx].content = text || comments[idx].content || comments[idx].text || '';
+      comments[idx].text = comments[idx].content;
       doc.comments = comments;
 
       await doc.save();
 
-      return res.json(comments[idx]);
+      return res.json(normalizeComment(comments[idx]));
     }
 
     if (dbReady) {
@@ -858,7 +997,7 @@ router.patch('/:id/comment/:commentId', requireAuth, (req, res) => {
         return res.status(404).json({ error: 'Comment not found' });
       }
 
-      return res.json(c);
+      return res.json(normalizeComment(c));
     }
 
     const p = posts.find((x) => x.id === id);
@@ -869,16 +1008,20 @@ router.patch('/:id/comment/:commentId', requireAuth, (req, res) => {
 
     if (!c) return res.status(404).json({ error: 'Comment not found' });
 
-    if (c.userId !== userId) {
+    if (String(c.userId) !== String(userId)) {
       return res.status(403).json({ error: 'Forbidden' });
     }
 
-    c.text = text || c.text;
+    c.content = text || c.content || c.text || '';
+    c.text = c.content;
 
     saveJSON('posts.json', posts).catch(() => {});
 
-    return res.json(c);
-  })().catch(() => res.status(500).json({ error: 'server_error' }));
+    return res.json(normalizeComment(c));
+  })().catch((err) => {
+    console.error('Edit comment error:', err?.message || err);
+    res.status(500).json({ error: 'server_error' });
+  });
 });
 
 router.delete('/:id/comment/:commentId', requireAuth, (req, res) => {
@@ -891,15 +1034,13 @@ router.delete('/:id/comment/:commentId', requireAuth, (req, res) => {
       if (!doc) return res.status(404).json({ error: 'Not found' });
 
       const comments = Array.isArray(doc.comments) ? doc.comments : [];
-      const idx = comments.findIndex(
-        (c) => String(c?.id) === String(commentId)
-      );
+      const idx = comments.findIndex((comment) => String(comment?.id) === String(commentId));
 
       if (idx === -1) {
         return res.status(404).json({ error: 'Comment not found' });
       }
 
-      if (String(comments[idx].userId) !== String(userId)) {
+      if (String(comments[idx].userId) !== String(userId) && !isOwner(doc.userId, req.user)) {
         return res.status(403).json({ error: 'Forbidden' });
       }
 
@@ -908,7 +1049,7 @@ router.delete('/:id/comment/:commentId', requireAuth, (req, res) => {
 
       await doc.save();
 
-      return res.json(removed);
+      return res.json(normalizeComment(removed));
     }
 
     if (dbReady) {
@@ -918,20 +1059,20 @@ router.delete('/:id/comment/:commentId', requireAuth, (req, res) => {
         return res.status(404).json({ error: 'Comment not found' });
       }
 
-      return res.json(removed);
+      return res.json(normalizeComment(removed));
     }
 
     const p = posts.find((x) => x.id === id);
 
     if (!p) return res.status(404).json({ error: 'Not found' });
 
-    const idx = p.comments.findIndex((c) => c.id === commentId);
+    const idx = p.comments.findIndex((comment) => comment.id === commentId);
 
     if (idx === -1) {
       return res.status(404).json({ error: 'Comment not found' });
     }
 
-    if (p.comments[idx].userId !== userId) {
+    if (String(p.comments[idx].userId) !== String(userId) && !isOwner(p.userId, req.user)) {
       return res.status(403).json({ error: 'Forbidden' });
     }
 
@@ -939,8 +1080,11 @@ router.delete('/:id/comment/:commentId', requireAuth, (req, res) => {
 
     saveJSON('posts.json', posts).catch(() => {});
 
-    return res.json(removed);
-  })().catch(() => res.status(500).json({ error: 'server_error' }));
+    return res.json(normalizeComment(removed));
+  })().catch((err) => {
+    console.error('Delete comment error:', err?.message || err);
+    res.status(500).json({ error: 'server_error' });
+  });
 });
 
 export default router;
