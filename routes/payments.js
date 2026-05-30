@@ -8,19 +8,27 @@ import { connectDb } from '../lib/db.js';
 const router = Router();
 
 /*
-  IMPORTANT ENV VARS ON RENDER BACKEND:
+  REQUIRED BACKEND ENV VARIABLES ON RENDER:
 
   YOCO_SECRET_KEY=sk_live_xxxxxxxxx
   YOCO_WEBHOOK_SECRET=whsec_xxxxxxxxx
   CLIENT_ORIGIN=https://facemexsocial.com
 
-  Do NOT put YOCO_SECRET_KEY on Netlify frontend.
+  IMPORTANT:
+  YOCO_SECRET_KEY must only be in Render backend.
+  Never put YOCO_SECRET_KEY in Netlify frontend.
 */
 
 const YOCO_SECRET_KEY = process.env.YOCO_SECRET_KEY || '';
 const YOCO_WEBHOOK_SECRET = process.env.YOCO_WEBHOOK_SECRET || '';
-const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || process.env.FRONTEND_URL || 'https://facemexsocial.com';
-const YOCO_CHECKOUTS_URL = process.env.YOCO_CHECKOUTS_URL || 'https://payments.yoco.com/api/checkouts';
+const CLIENT_ORIGIN =
+  process.env.CLIENT_ORIGIN ||
+  process.env.FRONTEND_URL ||
+  'https://facemexsocial.com';
+
+const YOCO_CHECKOUTS_URL =
+  process.env.YOCO_CHECKOUTS_URL ||
+  'https://payments.yoco.com/api/checkouts';
 
 const processedWebhookIds = new Set();
 
@@ -72,8 +80,7 @@ function normalizeTier(tier) {
 }
 
 function getPlanConfig(tier) {
-  const key = normalizeTier(tier);
-  return PLAN_CONFIG[key] || null;
+  return PLAN_CONFIG[normalizeTier(tier)] || null;
 }
 
 function addOneMonth() {
@@ -83,13 +90,26 @@ function addOneMonth() {
 }
 
 function getUserIdFromRequest(req) {
-  return clean(req.user?._id || req.user?.id || req.body?.userId || req.query?.userId);
+  return clean(
+    req.user?._id ||
+      req.user?.id ||
+      req.body?.userId ||
+      req.query?.userId ||
+      req.headers['x-user-id']
+  );
 }
 
 function isPaidStatus(status) {
   const s = clean(status).toLowerCase();
 
-  return ['paid', 'successful', 'success', 'succeeded', 'completed', 'complete'].includes(s);
+  return [
+    'paid',
+    'successful',
+    'success',
+    'succeeded',
+    'completed',
+    'complete',
+  ].includes(s);
 }
 
 function isFailedStatus(status) {
@@ -123,7 +143,13 @@ async function yocoRequest(url, options = {}) {
 
   if (!response.ok) {
     console.error('Yoco API error:', response.status, data);
-    throw new Error(data?.message || data?.error || `Yoco API failed with ${response.status}`);
+
+    throw new Error(
+      data?.message ||
+        data?.error ||
+        data?.errors?.[0]?.message ||
+        `Yoco API failed with ${response.status}`
+    );
   }
 
   return data;
@@ -135,6 +161,7 @@ function getCheckoutStatus(checkout) {
       checkout?.paymentStatus ||
       checkout?.payment?.status ||
       checkout?.data?.status ||
+      checkout?.data?.object?.status ||
       ''
   ).toLowerCase();
 }
@@ -146,6 +173,7 @@ function checkoutIsPaid(checkout) {
 
   if (checkout?.paymentId && !isFailedStatus(status)) return true;
   if (checkout?.payment?.id && !isFailedStatus(status)) return true;
+  if (checkout?.data?.paymentId && !isFailedStatus(status)) return true;
 
   return false;
 }
@@ -155,8 +183,7 @@ function checkoutIsFailed(checkout) {
 }
 
 async function activateUserAfterPayment(payment) {
-  const planKey = normalizeTier(payment.tier);
-  const config = getPlanConfig(planKey);
+  const config = getPlanConfig(payment.tier);
 
   if (!config) {
     throw new Error(`Invalid payment tier: ${payment.tier}`);
@@ -177,7 +204,10 @@ async function activateUserAfterPayment(payment) {
           updatedAt: new Date(),
         },
       },
-      { new: true }
+      {
+        new: true,
+        strict: false,
+      }
     );
 
     return {
@@ -198,7 +228,10 @@ async function activateUserAfterPayment(payment) {
         updatedAt: new Date(),
       },
     },
-    { new: true }
+    {
+      new: true,
+      strict: false,
+    }
   );
 
   return {
@@ -218,14 +251,15 @@ async function markPaymentCompleted(payment, providerPayload = {}) {
   payment.providerPayload = providerPayload;
 
   await payment.save();
-
   await activateUserAfterPayment(payment);
 
   return payment;
 }
 
 async function markPaymentFailed(payment, status = 'failed', providerPayload = {}) {
-  payment.status = status === 'cancelled' || status === 'canceled' ? 'cancelled' : 'failed';
+  payment.status =
+    status === 'cancelled' || status === 'canceled' ? 'cancelled' : 'failed';
+
   payment.providerPayload = providerPayload;
 
   await payment.save();
@@ -253,14 +287,29 @@ function getWebhookHeader(req, name) {
   return clean(req.headers[name] || req.headers[name.toLowerCase()]);
 }
 
-function verifyYocoWebhookSignature(req, rawBody) {
-  /*
-    Yoco webhook verification uses the raw body plus webhook headers.
-    Configure express.raw for this route in app.js/server.js.
-  */
+function extractWebhookSignatures(headerValue) {
+  return String(headerValue || '')
+    .split(/\s+/)
+    .flatMap((part) => {
+      const cleanPart = part.trim();
+      if (!cleanPart) return [];
 
+      if (cleanPart.includes(',')) {
+        return [cleanPart.split(',').pop().trim()];
+      }
+
+      if (cleanPart.includes('=')) {
+        return [cleanPart.split('=').pop().trim()];
+      }
+
+      return [cleanPart];
+    })
+    .filter(Boolean);
+}
+
+function verifyYocoWebhookSignature(req, rawBody) {
   if (!YOCO_WEBHOOK_SECRET) {
-    console.warn('YOCO_WEBHOOK_SECRET missing. Webhook signature verification skipped.');
+    console.warn('YOCO_WEBHOOK_SECRET missing. Webhook verification skipped.');
     return true;
   }
 
@@ -279,18 +328,28 @@ function verifyYocoWebhookSignature(req, rawBody) {
   if (!Number.isFinite(timestamp)) return false;
 
   const ageSeconds = Math.abs(now - timestamp);
+
   if (ageSeconds > 300) {
     console.error('Yoco webhook rejected: timestamp too old');
     return false;
   }
 
-  const secretBase64 = YOCO_WEBHOOK_SECRET.includes('_')
-    ? YOCO_WEBHOOK_SECRET.split('_')[1]
-    : YOCO_WEBHOOK_SECRET;
+  let secretBytes;
 
-  if (!secretBase64) return false;
+  try {
+    const secretBase64 = YOCO_WEBHOOK_SECRET.includes('_')
+      ? YOCO_WEBHOOK_SECRET.split('_')[1]
+      : YOCO_WEBHOOK_SECRET;
 
-  const secretBytes = Buffer.from(secretBase64, 'base64');
+    secretBytes = Buffer.from(secretBase64, 'base64');
+  } catch {
+    return false;
+  }
+
+  if (!secretBytes || secretBytes.length === 0) {
+    return false;
+  }
+
   const signedContent = `${webhookId}.${webhookTimestamp}.${rawBody}`;
 
   const expectedSignature = crypto
@@ -298,14 +357,7 @@ function verifyYocoWebhookSignature(req, rawBody) {
     .update(signedContent)
     .digest('base64');
 
-  const receivedSignatures = String(webhookSignature)
-    .split(' ')
-    .map((part) => {
-      if (part.includes(',')) return part.split(',')[1];
-      return part;
-    })
-    .map((part) => part.trim())
-    .filter(Boolean);
+  const receivedSignatures = extractWebhookSignatures(webhookSignature);
 
   return receivedSignatures.some((sig) => {
     const expected = Buffer.from(expectedSignature);
@@ -317,25 +369,45 @@ function verifyYocoWebhookSignature(req, rawBody) {
   });
 }
 
-function extractWebhookInfo(event) {
-  const payload =
+function getWebhookPayload(event) {
+  return (
     event?.payload ||
+    event?.data?.object ||
+    event?.data?.checkout ||
+    event?.data?.payment ||
     event?.data ||
     event?.object ||
     event?.checkout ||
     event?.payment ||
     event ||
-    {};
+    {}
+  );
+}
 
-  const metadata =
+function getWebhookMetadata(event, payload) {
+  return (
     payload?.metadata ||
     event?.metadata ||
     event?.data?.metadata ||
     event?.payload?.metadata ||
-    {};
+    event?.data?.object?.metadata ||
+    {}
+  );
+}
+
+function extractWebhookInfo(event) {
+  const payload = getWebhookPayload(event);
+  const metadata = getWebhookMetadata(event, payload);
 
   const eventType = clean(event?.type || event?.event || event?.name).toLowerCase();
-  const status = clean(payload?.status || event?.status || payload?.paymentStatus).toLowerCase();
+
+  const status = clean(
+    payload?.status ||
+      payload?.paymentStatus ||
+      event?.status ||
+      event?.data?.status ||
+      ''
+  ).toLowerCase();
 
   const externalId =
     clean(payload?.externalId) ||
@@ -343,7 +415,9 @@ function extractWebhookInfo(event) {
     clean(event?.externalId) ||
     clean(event?.external_id) ||
     clean(metadata?.paymentId) ||
-    clean(metadata?.payment_id);
+    clean(metadata?.payment_id) ||
+    clean(metadata?.externalId) ||
+    clean(metadata?.external_id);
 
   const providerPaymentId =
     clean(payload?.id) ||
@@ -351,7 +425,8 @@ function extractWebhookInfo(event) {
     clean(payload?.checkout_id) ||
     clean(payload?.paymentId) ||
     clean(payload?.payment_id) ||
-    clean(event?.id);
+    clean(event?.id) ||
+    clean(event?.data?.id);
 
   const metadataPaymentId =
     clean(metadata?.paymentId) ||
@@ -399,7 +474,9 @@ async function findPaymentForWebhook(info) {
   }
 
   if (info.metadataPaymentId) {
-    const byMetadataPaymentId = await Payment.findById(info.metadataPaymentId).catch(() => null);
+    const byMetadataPaymentId = await Payment.findById(info.metadataPaymentId).catch(
+      () => null
+    );
     if (byMetadataPaymentId) return byMetadataPaymentId;
   }
 
@@ -414,14 +491,7 @@ async function findPaymentForWebhook(info) {
   return null;
 }
 
-/*
-  POST /api/payments/initiate
-
-  Creates Mongo Payment record.
-  Creates Yoco checkout session.
-  Returns redirectUrl to frontend.
-*/
-router.post('/initiate', requireAuth, async (req, res) => {
+async function createCheckoutHandler(req, res) {
   try {
     await connectDb();
 
@@ -495,15 +565,6 @@ router.post('/initiate', requireAuth, async (req, res) => {
         tier: config.tier,
         planName: config.name,
       },
-      lineItems: [
-        {
-          displayName: config.name,
-          quantity: 1,
-          pricingDetails: {
-            price: config.amountCents,
-          },
-        },
-      ],
     };
 
     const yocoCheckout = await yocoRequest(YOCO_CHECKOUTS_URL, {
@@ -552,15 +613,9 @@ router.post('/initiate', requireAuth, async (req, res) => {
       message: err?.message || String(err),
     });
   }
-});
+}
 
-/*
-  POST /api/payments/verify
-
-  Frontend calls this after return from Yoco success URL.
-  It checks Yoco directly before activating user.
-*/
-router.post('/verify', requireAuth, async (req, res) => {
+async function verifyPaymentHandler(req, res) {
   try {
     await connectDb();
 
@@ -658,126 +713,41 @@ router.post('/verify', requireAuth, async (req, res) => {
       message: err?.message || String(err),
     });
   }
-});
+}
 
 /*
-  GET /api/payments/confirm?paymentId=...
-
-  Keep this for compatibility with older frontend.
-  It no longer trusts ?status=completed.
-  It verifies directly with Yoco.
+  MAIN PAYMENT ROUTES
 */
+router.post('/initiate', requireAuth, createCheckoutHandler);
+router.post('/verify', requireAuth, verifyPaymentHandler);
+
+/*
+  COMPATIBILITY ROUTES
+  These help if your frontend is still calling older endpoints.
+*/
+router.post('/create-checkout', requireAuth, createCheckoutHandler);
+router.post('/yoco/create-checkout', requireAuth, createCheckoutHandler);
+router.post('/yoco/verify', requireAuth, verifyPaymentHandler);
+
 router.get('/confirm', requireAuth, async (req, res) => {
-  try {
-    await connectDb();
+  req.body = {
+    ...(req.body || {}),
+    paymentId: req.query?.paymentId,
+  };
 
-    const userId = getUserIdFromRequest(req);
-    const paymentId = clean(req.query?.paymentId);
-
-    if (!paymentId) {
-      return res.status(400).json({
-        ok: false,
-        error: 'missing_paymentId',
-      });
-    }
-
-    const payment = await Payment.findById(paymentId);
-
-    if (!payment) {
-      return res.status(404).json({
-        ok: false,
-        error: 'payment_not_found',
-      });
-    }
-
-    if (String(payment.user) !== String(userId)) {
-      return res.status(403).json({
-        ok: false,
-        error: 'payment_not_for_this_user',
-      });
-    }
-
-    if (payment.status === 'completed') {
-      return res.json({
-        ok: true,
-        active: true,
-        payment,
-        tier: payment.tier,
-      });
-    }
-
-    if (!payment.providerPaymentId) {
-      return res.status(400).json({
-        ok: false,
-        error: 'missing_provider_payment_id',
-      });
-    }
-
-    const checkout = await yocoRequest(
-      `${YOCO_CHECKOUTS_URL}/${encodeURIComponent(payment.providerPaymentId)}`,
-      {
-        method: 'GET',
-      }
-    );
-
-    if (checkoutIsPaid(checkout)) {
-      await markPaymentCompleted(payment, checkout);
-
-      return res.json({
-        ok: true,
-        active: true,
-        payment,
-        tier: payment.tier,
-        message: 'Payment confirmed and subscription activated.',
-      });
-    }
-
-    if (checkoutIsFailed(checkout)) {
-      await markPaymentFailed(payment, getCheckoutStatus(checkout), checkout);
-
-      return res.json({
-        ok: true,
-        active: false,
-        payment,
-        status: payment.status,
-        message: 'Payment was not successful.',
-      });
-    }
-
-    payment.providerPayload = checkout;
-    await payment.save();
-
-    return res.json({
-      ok: true,
-      active: false,
-      pending: true,
-      payment,
-      yocoStatus: getCheckoutStatus(checkout) || 'pending',
-      message: 'Payment is still being confirmed.',
-    });
-  } catch (err) {
-    console.error('payments/confirm error:', err?.message || err);
-
-    return res.status(500).json({
-      ok: false,
-      error: 'server_error',
-      message: err?.message || String(err),
-    });
-  }
+  return verifyPaymentHandler(req, res);
 });
 
 /*
-  POST /api/payments/webhook
-
-  Yoco calls this automatically.
-  This activates the user even if they close the browser after payment.
+  YOCO WEBHOOK
+  Yoco calls this automatically after payment events.
+  Do NOT add requireAuth here.
 */
 router.post('/webhook', async (req, res) => {
   try {
     await connectDb();
 
     const rawBody = getRawBody(req);
-
     const validSignature = verifyYocoWebhookSignature(req, rawBody);
 
     if (!validSignature) {
@@ -819,13 +789,11 @@ router.post('/webhook', async (req, res) => {
 
     if (info.paid) {
       await markPaymentCompleted(payment, info.payload);
-
       return res.status(200).send('ok');
     }
 
     if (info.failed) {
       await markPaymentFailed(payment, info.status || 'failed', info.payload);
-
       return res.status(200).send('ok');
     }
 
@@ -835,7 +803,6 @@ router.post('/webhook', async (req, res) => {
     return res.status(200).send('ok');
   } catch (err) {
     console.error('payments/webhook error:', err?.message || err);
-
     return res.status(500).send('error');
   }
 });
