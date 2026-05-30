@@ -18,6 +18,7 @@ import notificationsRouter from './routes/notifications.js';
 import reactionsRouter from './routes/reactions.js';
 import { dbReady, lastError } from './utils/sqlite.js';
 import billingRouter from './routes/billing.js';
+import paymentsRouter from './routes/payments.js';
 import aiRouter from './routes/ai.js';
 import businessRouter from './routes/business.js';
 import safetyRouter from './routes/safety.js';
@@ -86,6 +87,10 @@ app.use(
   })
 );
 
+/*
+  STRIPE WEBHOOK
+  Must stay before express.json()
+*/
 if (process.env.STRIPE_SECRET_KEY) {
   const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
     apiVersion: '2024-06-20',
@@ -128,11 +133,24 @@ if (process.env.STRIPE_SECRET_KEY) {
   );
 }
 
+/*
+  YOCO WEBHOOK
+  IMPORTANT:
+  This must come BEFORE express.json().
+  Yoco signature verification needs the raw request body.
+*/
+app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
+
+/*
+  NORMAL BODY PARSERS
+*/
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 app.get('/', (_req, res) => {
-  res.type('text/plain').send('FaceMe API is running. See /health and /api/* endpoints.');
+  res
+    .type('text/plain')
+    .send('FaceMe API is running. See /health and /api/* endpoints.');
 });
 
 app.get('/health', (_req, res) => {
@@ -175,9 +193,21 @@ app.get('/api/health', async (_req, res) => {
     cloudinary: {
       configured: cloudinaryConfigured,
     },
+    yoco: {
+      secretKeyConfigured: !!process.env.YOCO_SECRET_KEY,
+      webhookSecretConfigured: !!process.env.YOCO_WEBHOOK_SECRET,
+      clientOrigin: process.env.CLIENT_ORIGIN || process.env.FRONTEND_URL || null,
+    },
+    stripe: {
+      configured: !!process.env.STRIPE_SECRET_KEY,
+      webhookConfigured: !!process.env.STRIPE_WEBHOOK_SECRET,
+    },
   });
 });
 
+/*
+  API ROUTES
+*/
 app.use('/api/auth', authRouter);
 app.use('/api/users', usersRouter);
 app.use('/api/posts', postsRouter);
@@ -185,6 +215,7 @@ app.use('/api/events', eventsRouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/reactions', reactionsRouter);
 app.use('/api/billing', billingRouter);
+app.use('/api/payments', paymentsRouter);
 app.use('/api/ai', aiRouter);
 app.use('/api/business', businessRouter);
 app.use('/api/safety', safetyRouter);
@@ -226,7 +257,10 @@ io.on('connection', (socket) => {
 
   socket.on('call:candidate', ({ roomId, candidate, from }) => {
     if (!roomId || !candidate) return;
-    socket.to(roomId).emit('call:candidate', { candidate, from: from || socket.id });
+    socket.to(roomId).emit('call:candidate', {
+      candidate,
+      from: from || socket.id,
+    });
   });
 
   socket.on('call:end', ({ roomId, from }) => {
