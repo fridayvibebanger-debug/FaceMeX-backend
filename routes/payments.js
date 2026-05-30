@@ -1,22 +1,21 @@
 import { Router } from 'express';
 import crypto from 'crypto';
+import mongoose from 'mongoose';
 import { requireAuth } from '../middleware/auth.js';
-import { Payment } from '../models/Payment.js';
-import { User } from '../models/User.js';
 import { connectDb } from '../lib/db.js';
 
 const router = Router();
 
 /*
-  REQUIRED BACKEND ENV VARIABLES ON RENDER:
+  REQUIRED RENDER BACKEND ENV VARIABLES:
 
   YOCO_SECRET_KEY=sk_live_xxxxxxxxx
   YOCO_WEBHOOK_SECRET=whsec_xxxxxxxxx
   CLIENT_ORIGIN=https://facemexsocial.com
 
   IMPORTANT:
-  YOCO_SECRET_KEY must only be in Render backend.
-  Never put YOCO_SECRET_KEY in Netlify frontend.
+  Do NOT put YOCO_SECRET_KEY in Netlify.
+  Only Render backend must have YOCO_SECRET_KEY.
 */
 
 const YOCO_SECRET_KEY = process.env.YOCO_SECRET_KEY || '';
@@ -31,6 +30,92 @@ const YOCO_CHECKOUTS_URL =
   'https://payments.yoco.com/api/checkouts';
 
 const processedWebhookIds = new Set();
+
+/*
+  Payment model is defined here to fix:
+  Cannot find module '../models/Payment.js'
+*/
+const PaymentSchema = new mongoose.Schema(
+  {
+    user: {
+      type: mongoose.Schema.Types.ObjectId,
+      required: true,
+      index: true,
+    },
+
+    tier: {
+      type: String,
+      enum: ['pro', 'creator', 'business', 'exclusive', 'verified'],
+      required: true,
+      index: true,
+    },
+
+    amount: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+
+    currency: {
+      type: String,
+      default: 'ZAR',
+      uppercase: true,
+      trim: true,
+    },
+
+    provider: {
+      type: String,
+      default: 'yoco',
+      lowercase: true,
+      trim: true,
+    },
+
+    providerPaymentId: {
+      type: String,
+      default: '',
+      index: true,
+      trim: true,
+    },
+
+    redirectUrl: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+
+    status: {
+      type: String,
+      enum: ['pending', 'completed', 'failed', 'cancelled'],
+      default: 'pending',
+      index: true,
+    },
+
+    metadata: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
+    },
+
+    providerPayload: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
+    },
+
+    completedAt: {
+      type: Date,
+      default: null,
+    },
+  },
+  {
+    timestamps: true,
+  }
+);
+
+PaymentSchema.index({ user: 1, status: 1 });
+PaymentSchema.index({ provider: 1, providerPaymentId: 1 });
+PaymentSchema.index({ createdAt: -1 });
+
+const Payment =
+  mongoose.models.Payment || mongoose.model('Payment', PaymentSchema);
 
 const PLAN_CONFIG = {
   pro: {
@@ -182,6 +267,32 @@ function checkoutIsFailed(checkout) {
   return isFailedStatus(getCheckoutStatus(checkout));
 }
 
+async function updateUserAccess(userId, update) {
+  if (!userId) {
+    throw new Error('Missing userId for user update');
+  }
+
+  const id = String(userId);
+
+  if (mongoose.models.User) {
+    return mongoose.models.User.findByIdAndUpdate(id, update, {
+      new: true,
+      strict: false,
+    });
+  }
+
+  const queryId = mongoose.Types.ObjectId.isValid(id)
+    ? new mongoose.Types.ObjectId(id)
+    : id;
+
+  return mongoose.connection.collection('users').updateOne(
+    {
+      _id: queryId,
+    },
+    update
+  );
+}
+
 async function activateUserAfterPayment(payment) {
   const config = getPlanConfig(payment.tier);
 
@@ -194,21 +305,14 @@ async function activateUserAfterPayment(payment) {
   }
 
   if (config.type === 'addon' && config.addon === 'verified') {
-    await User.findByIdAndUpdate(
-      payment.user,
-      {
-        $set: {
-          'addons.verified': true,
-          verified: true,
-          userVerified: true,
-          updatedAt: new Date(),
-        },
+    await updateUserAccess(payment.user, {
+      $set: {
+        'addons.verified': true,
+        verified: true,
+        userVerified: true,
+        updatedAt: new Date(),
       },
-      {
-        new: true,
-        strict: false,
-      }
-    );
+    });
 
     return {
       activated: true,
@@ -217,22 +321,15 @@ async function activateUserAfterPayment(payment) {
     };
   }
 
-  await User.findByIdAndUpdate(
-    payment.user,
-    {
-      $set: {
-        tier: config.tier,
-        subscriptionTier: config.tier,
-        subscriptionStatus: 'active',
-        subscriptionExpiresAt: addOneMonth(),
-        updatedAt: new Date(),
-      },
+  await updateUserAccess(payment.user, {
+    $set: {
+      tier: config.tier,
+      subscriptionTier: config.tier,
+      subscriptionStatus: 'active',
+      subscriptionExpiresAt: addOneMonth(),
+      updatedAt: new Date(),
     },
-    {
-      new: true,
-      strict: false,
-    }
-  );
+  });
 
   return {
     activated: true,
@@ -334,38 +431,34 @@ function verifyYocoWebhookSignature(req, rawBody) {
     return false;
   }
 
-  let secretBytes;
-
-  try {
-    const secretBase64 = YOCO_WEBHOOK_SECRET.includes('_')
-      ? YOCO_WEBHOOK_SECRET.split('_')[1]
-      : YOCO_WEBHOOK_SECRET;
-
-    secretBytes = Buffer.from(secretBase64, 'base64');
-  } catch {
-    return false;
-  }
-
-  if (!secretBytes || secretBytes.length === 0) {
-    return false;
-  }
-
   const signedContent = `${webhookId}.${webhookTimestamp}.${rawBody}`;
-
-  const expectedSignature = crypto
-    .createHmac('sha256', secretBytes)
-    .update(signedContent)
-    .digest('base64');
-
   const receivedSignatures = extractWebhookSignatures(webhookSignature);
 
-  return receivedSignatures.some((sig) => {
-    const expected = Buffer.from(expectedSignature);
-    const received = Buffer.from(sig);
+  const possibleSecrets = [];
 
-    if (expected.length !== received.length) return false;
+  if (YOCO_WEBHOOK_SECRET.includes('_')) {
+    possibleSecrets.push(Buffer.from(YOCO_WEBHOOK_SECRET.split('_')[1], 'base64'));
+  }
 
-    return crypto.timingSafeEqual(expected, received);
+  possibleSecrets.push(Buffer.from(YOCO_WEBHOOK_SECRET, 'base64'));
+  possibleSecrets.push(Buffer.from(YOCO_WEBHOOK_SECRET, 'utf8'));
+
+  return possibleSecrets.some((secretBytes) => {
+    if (!secretBytes || secretBytes.length === 0) return false;
+
+    const expectedSignature = crypto
+      .createHmac('sha256', secretBytes)
+      .update(signedContent)
+      .digest('base64');
+
+    return receivedSignatures.some((sig) => {
+      const expected = Buffer.from(expectedSignature);
+      const received = Buffer.from(sig);
+
+      if (expected.length !== received.length) return false;
+
+      return crypto.timingSafeEqual(expected, received);
+    });
   });
 }
 
@@ -474,9 +567,10 @@ async function findPaymentForWebhook(info) {
   }
 
   if (info.metadataPaymentId) {
-    const byMetadataPaymentId = await Payment.findById(info.metadataPaymentId).catch(
-      () => null
-    );
+    const byMetadataPaymentId = await Payment.findById(
+      info.metadataPaymentId
+    ).catch(() => null);
+
     if (byMetadataPaymentId) return byMetadataPaymentId;
   }
 
@@ -565,6 +659,15 @@ async function createCheckoutHandler(req, res) {
         tier: config.tier,
         planName: config.name,
       },
+      lineItems: [
+        {
+          displayName: config.name,
+          quantity: 1,
+          pricingDetails: {
+            price: config.amountCents,
+          },
+        },
+      ],
     };
 
     const yocoCheckout = await yocoRequest(YOCO_CHECKOUTS_URL, {
@@ -716,14 +819,13 @@ async function verifyPaymentHandler(req, res) {
 }
 
 /*
-  MAIN PAYMENT ROUTES
+  Main routes
 */
 router.post('/initiate', requireAuth, createCheckoutHandler);
 router.post('/verify', requireAuth, verifyPaymentHandler);
 
 /*
-  COMPATIBILITY ROUTES
-  These help if your frontend is still calling older endpoints.
+  Compatibility routes
 */
 router.post('/create-checkout', requireAuth, createCheckoutHandler);
 router.post('/yoco/create-checkout', requireAuth, createCheckoutHandler);
@@ -739,8 +841,7 @@ router.get('/confirm', requireAuth, async (req, res) => {
 });
 
 /*
-  YOCO WEBHOOK
-  Yoco calls this automatically after payment events.
+  Yoco webhook route.
   Do NOT add requireAuth here.
 */
 router.post('/webhook', async (req, res) => {
