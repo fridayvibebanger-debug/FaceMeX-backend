@@ -36,7 +36,13 @@ function normalizeMode(mode) {
 }
 
 function getCanonicalUserId(user) {
-  return clean(user?.externalId || user?._id || user?.id || user?.supabaseId || user?.authId);
+  return clean(
+    user?.externalId ||
+      user?.supabaseId ||
+      user?.authId ||
+      user?.id ||
+      user?._id
+  );
 }
 
 function toObjectIdIfValid(id) {
@@ -59,51 +65,199 @@ function isVerifiedUser(user) {
       user?.authorVerified === true ||
       user?.accountVerified === true ||
       user?.isVerified === true ||
-      user?.is_verified === true
+      user?.is_verified === true ||
+      user?.profileVerified === true ||
+      user?.subscriptionVerified === true
   );
 }
 
-async function getUserByAnyId(userId) {
+function getSafeDate(value) {
+  const raw = value || new Date().toISOString();
+  const date = raw instanceof Date ? raw : new Date(String(raw));
+
+  if (Number.isNaN(date.getTime())) return new Date();
+
+  return date;
+}
+
+function getSafeIsoDate(value) {
+  return getSafeDate(value).toISOString();
+}
+
+function extractHashtags(content = '') {
+  const matches = String(content).match(/#[a-zA-Z0-9_]+/g) || [];
+  return Array.from(new Set(matches)).slice(0, 10);
+}
+
+function getUserPublicId(user) {
+  return clean(
+    user?.externalId ||
+      user?.supabaseId ||
+      user?.authId ||
+      user?.id ||
+      user?._id
+  );
+}
+
+function getUserDisplayName(user, fallback = '') {
+  const emailName = clean(user?.email).includes('@')
+    ? clean(user?.email).split('@')[0]
+    : '';
+
+  return (
+    clean(user?.name) ||
+    clean(user?.fullName) ||
+    clean(user?.full_name) ||
+    clean(user?.username) ||
+    emailName ||
+    clean(fallback) ||
+    'FaceMeX Member'
+  );
+}
+
+function getUserAvatar(user, fallback = '') {
+  return (
+    clean(user?.avatar) ||
+    clean(user?.avatarUrl) ||
+    clean(user?.avatar_url) ||
+    clean(user?.profileImage) ||
+    clean(user?.profile_image) ||
+    clean(fallback)
+  );
+}
+
+function getCollabCodeFromUser(user) {
+  const name = getUserDisplayName(user, 'User')
+    .replace(/\s+/g, '')
+    .replace(/[^a-zA-Z0-9]/g, '');
+
+  const id = getUserPublicId(user).replace(/[^a-zA-Z0-9]/g, '');
+  const last4 = id.slice(-4) || '0000';
+
+  return `${name || 'User'}${last4}`;
+}
+
+function makeUserProfile(user, fallbackId = '', fallbackName = '') {
+  const id = getUserPublicId(user) || clean(fallbackId);
+  const name = getUserDisplayName(user, fallbackName);
+
+  return {
+    id,
+    userId: id,
+    name,
+    userName: name,
+    avatar: getUserAvatar(user),
+    userAvatar: getUserAvatar(user),
+    verified: isVerifiedUser(user),
+    userVerified: isVerifiedUser(user),
+    isVerified: isVerifiedUser(user),
+    code: getCollabCodeFromUser(user),
+  };
+}
+
+async function getUserByAnyId(userIdOrCode) {
   try {
-    const cleanId = clean(userId);
-    if (!cleanId) return null;
+    const value = clean(userIdOrCode);
+    if (!value) return null;
 
-    const objectId = toObjectIdIfValid(cleanId);
+    const objectId = toObjectIdIfValid(value);
 
-    const user = await User.findOne({
+    const directUser = await User.findOne({
       $or: [
-        { externalId: cleanId },
-        { id: cleanId },
-        { supabaseId: cleanId },
-        { authId: cleanId },
+        { externalId: value },
+        { id: value },
+        { supabaseId: value },
+        { authId: value },
+        { username: value },
+        { email: value },
         ...(objectId ? [{ _id: objectId }] : []),
       ],
     })
       .select(
-        '_id id externalId supabaseId authId name fullName full_name username email avatar avatarUrl avatar_url addons verified userVerified authorVerified accountVerified isVerified is_verified tier subscriptionTier'
+        '_id id externalId supabaseId authId name fullName full_name username email avatar avatarUrl avatar_url profileImage profile_image addons verified userVerified authorVerified accountVerified isVerified is_verified profileVerified subscriptionVerified tier subscriptionTier'
       )
       .lean();
 
-    return user || null;
+    if (directUser) return directUser;
+
+    const sampleUsers = await User.find({})
+      .select(
+        '_id id externalId supabaseId authId name fullName full_name username email avatar avatarUrl avatar_url addons verified userVerified authorVerified accountVerified isVerified is_verified profileVerified subscriptionVerified'
+      )
+      .limit(5000)
+      .lean();
+
+    const lowerValue = value.toLowerCase();
+
+    const byGeneratedCode = (sampleUsers || []).find((user) => {
+      const code = getCollabCodeFromUser(user).toLowerCase();
+      const name = getUserDisplayName(user).replace(/\s+/g, '').toLowerCase();
+      const username = clean(user?.username).toLowerCase();
+
+      return code === lowerValue || name === lowerValue || username === lowerValue;
+    });
+
+    return byGeneratedCode || null;
   } catch (err) {
     console.error('User lookup failed:', err?.message || err);
     return null;
   }
 }
 
-async function getUserVerifiedStatus(userId) {
-  const foundUser = await getUserByAnyId(userId);
-  return isVerifiedUser(foundUser);
+async function resolveUserIdOrCode(value) {
+  const raw = clean(value);
+  if (!raw) return '';
+
+  const foundUser = await getUserByAnyId(raw);
+  if (foundUser) return getUserPublicId(foundUser);
+
+  return raw;
+}
+
+function collectRawUserId(value, bucket) {
+  if (!value) return;
+
+  if (typeof value === 'string') {
+    const v = clean(value);
+    if (v) bucket.add(v);
+    return;
+  }
+
+  const keys = [
+    value._id,
+    value.id,
+    value.userId,
+    value.externalId,
+    value.supabaseId,
+    value.authId,
+  ];
+
+  keys.map(clean).filter(Boolean).forEach((id) => bucket.add(id));
 }
 
 async function buildUserMapForPosts(list) {
-  const userIds = Array.from(
-    new Set(
-      (list || [])
-        .map((post) => clean(post.userId || post.user || post.authorId || post.externalId))
-        .filter(Boolean)
-    )
-  );
+  const ids = new Set();
+
+  for (const post of list || []) {
+    collectRawUserId(post?.userId, ids);
+    collectRawUserId(post?.user, ids);
+    collectRawUserId(post?.authorId, ids);
+    collectRawUserId(post?.externalId, ids);
+
+    if (Array.isArray(post?.collaborators)) {
+      post.collaborators.forEach((item) => collectRawUserId(item, ids));
+    }
+
+    if (Array.isArray(post?.collabInvites)) {
+      post.collabInvites.forEach((item) => collectRawUserId(item, ids));
+    }
+
+    if (Array.isArray(post?.comments)) {
+      post.comments.forEach((comment) => collectRawUserId(comment?.userId, ids));
+    }
+  }
+
+  const userIds = Array.from(ids).filter(Boolean);
 
   if (!userIds.length) return new Map();
 
@@ -115,11 +269,12 @@ async function buildUserMapForPosts(list) {
       { id: { $in: userIds } },
       { supabaseId: { $in: userIds } },
       { authId: { $in: userIds } },
+      { username: { $in: userIds } },
       ...(objectIds.length ? [{ _id: { $in: objectIds } }] : []),
     ],
   })
     .select(
-      '_id id externalId supabaseId authId name fullName full_name username email avatar avatarUrl avatar_url addons verified userVerified authorVerified accountVerified isVerified is_verified tier subscriptionTier'
+      '_id id externalId supabaseId authId name fullName full_name username email avatar avatarUrl avatar_url profileImage profile_image addons verified userVerified authorVerified accountVerified isVerified is_verified profileVerified subscriptionVerified tier subscriptionTier'
     )
     .lean();
 
@@ -132,8 +287,10 @@ async function buildUserMapForPosts(list) {
       user?.externalId,
       user?.supabaseId,
       user?.authId,
+      user?.username,
+      getCollabCodeFromUser(user),
     ]
-      .map((x) => clean(x))
+      .map(clean)
       .filter(Boolean);
 
     keys.forEach((key) => map.set(key, user));
@@ -142,81 +299,181 @@ async function buildUserMapForPosts(list) {
   return map;
 }
 
-function getUserDisplayName(user, fallback = '') {
-  return (
-    clean(user?.name) ||
-    clean(user?.fullName) ||
-    clean(user?.full_name) ||
-    clean(user?.username) ||
-    clean(user?.email).split('@')[0] ||
-    clean(fallback) ||
-    'FaceMeX Member'
-  );
+function getUserFromMap(userMap, rawValue) {
+  if (!userMap || !rawValue) return null;
+
+  if (typeof rawValue === 'string') {
+    return userMap.get(clean(rawValue)) || null;
+  }
+
+  const keys = [
+    rawValue?._id,
+    rawValue?.id,
+    rawValue?.userId,
+    rawValue?.externalId,
+    rawValue?.supabaseId,
+    rawValue?.authId,
+    rawValue?.username,
+  ]
+    .map(clean)
+    .filter(Boolean);
+
+  for (const key of keys) {
+    const found = userMap.get(key);
+    if (found) return found;
+  }
+
+  return null;
 }
 
-function getUserAvatar(user, fallback = '') {
-  return (
-    clean(user?.avatar) ||
-    clean(user?.avatarUrl) ||
-    clean(user?.avatar_url) ||
-    clean(fallback)
-  );
+function normalizeProfileFromRaw(raw, userMap, index = 0) {
+  const foundUser = getUserFromMap(userMap, raw);
+
+  if (foundUser) {
+    return makeUserProfile(foundUser);
+  }
+
+  if (typeof raw === 'string') {
+    return {
+      id: raw,
+      userId: raw,
+      name: raw.length > 18 ? `Collaborator ${index + 1}` : raw,
+      userName: raw.length > 18 ? `Collaborator ${index + 1}` : raw,
+      avatar: '',
+      userAvatar: '',
+      verified: false,
+      userVerified: false,
+      isVerified: false,
+      code: raw,
+    };
+  }
+
+  const id =
+    clean(raw?._id) ||
+    clean(raw?.id) ||
+    clean(raw?.userId) ||
+    clean(raw?.externalId) ||
+    clean(raw?.supabaseId) ||
+    clean(raw?.authId) ||
+    `collab-${index}`;
+
+  const name =
+    clean(raw?.name) ||
+    clean(raw?.userName) ||
+    clean(raw?.fullName) ||
+    clean(raw?.full_name) ||
+    clean(raw?.username) ||
+    `Collaborator ${index + 1}`;
+
+  const avatar =
+    clean(raw?.avatar) ||
+    clean(raw?.userAvatar) ||
+    clean(raw?.avatarUrl) ||
+    clean(raw?.avatar_url) ||
+    '';
+
+  const verified = isVerifiedUser(raw);
+
+  return {
+    id,
+    userId: id,
+    name,
+    userName: name,
+    avatar,
+    userAvatar: avatar,
+    verified,
+    userVerified: verified,
+    isVerified: verified,
+    code: clean(raw?.code) || id,
+  };
 }
 
-function normalizeComment(comment = {}) {
-  const created =
+function normalizeComment(comment = {}, userMap = new Map()) {
+  const commentUser = getUserFromMap(userMap, comment?.userId);
+  const created = getSafeIsoDate(
     comment.timestamp ||
-    comment.createdAt ||
-    comment.created_at ||
-    new Date().toISOString();
+      comment.createdAt ||
+      comment.created_at ||
+      new Date().toISOString()
+  );
 
   const content = clean(comment.content || comment.text || '');
+  const userName = getUserDisplayName(commentUser, comment.userName);
+  const userAvatar = getUserAvatar(commentUser, comment.userAvatar || comment.avatar);
+  const verified = isVerifiedUser(commentUser) || isVerifiedUser(comment);
 
   return {
     id: clean(comment.id) || `c${Date.now()}`,
     userId: clean(comment.userId),
-    userName: clean(comment.userName) || 'FaceMeX Member',
-    userAvatar: clean(comment.userAvatar || comment.avatar),
-    avatar: clean(comment.userAvatar || comment.avatar),
+    userName,
+    userAvatar,
+    avatar: userAvatar,
+    verified,
+    userVerified: verified,
+    isVerified: verified,
     content,
     text: content,
     type: comment.type || (comment.voiceUrl ? 'voice' : 'text'),
     voiceUrl: clean(comment.voiceUrl || comment.voice_url),
-    createdAt: new Date(created).toISOString(),
-    timestamp: new Date(created).toISOString(),
+    createdAt: created,
+    timestamp: created,
   };
 }
 
-function shapePost(rawPost, author = null) {
+function shapePost(rawPost, author = null, userMap = new Map()) {
   const p = typeof rawPost?.toObject === 'function' ? rawPost.toObject() : rawPost || {};
 
+  const authorFromMap =
+    author ||
+    getUserFromMap(userMap, p.userId) ||
+    getUserFromMap(userMap, p.user) ||
+    getUserFromMap(userMap, p.authorId);
+
   const authorVerified =
-    isVerifiedUser(author) ||
+    isVerifiedUser(authorFromMap) ||
     p?.verified === true ||
     p?.userVerified === true ||
     p?.authorVerified === true ||
     p?.accountVerified === true ||
     p?.isVerified === true ||
-    p?.is_verified === true;
+    p?.is_verified === true ||
+    p?.profileVerified === true;
 
-  const userName = getUserDisplayName(author, p.userName);
-  const avatar = getUserAvatar(author, p.userAvatar || p.avatar);
+  const userName = getUserDisplayName(authorFromMap, p.userName);
+  const avatar = getUserAvatar(authorFromMap, p.userAvatar || p.avatar);
 
   const images = Array.isArray(p.images) ? p.images.filter(Boolean) : [];
   const firstImage = clean(p.image) || images[0] || '';
 
   const likedBy = Array.isArray(p.likedBy) ? p.likedBy.map(String) : [];
-  const comments = Array.isArray(p.comments) ? p.comments.map(normalizeComment) : [];
+  const comments = Array.isArray(p.comments)
+    ? p.comments.map((comment) => normalizeComment(comment, userMap))
+    : [];
 
-  const createdAt = p.createdAt
-    ? new Date(p.createdAt).toISOString()
-    : p.timestamp
-      ? new Date(p.timestamp).toISOString()
-      : new Date().toISOString();
+  const rawCollaborators = Array.isArray(p.collaborators) ? p.collaborators : [];
+  const rawCollabInvites = Array.isArray(p.collabInvites) ? p.collabInvites : [];
+
+  const collaboratorProfiles = rawCollaborators
+    .map((item, index) => normalizeProfileFromRaw(item, userMap, index))
+    .filter((profile) => profile.id)
+    .slice(0, 4);
+
+  const collabInviteProfiles = rawCollabInvites
+    .map((item, index) => normalizeProfileFromRaw(item, userMap, index))
+    .filter((profile) => profile.id)
+    .slice(0, 10);
+
+  const createdAt = getSafeIsoDate(p.createdAt || p.timestamp || p.created_at);
+
+  const content = clean(p.content);
+  const hashtags = Array.isArray(p.hashtags)
+    ? p.hashtags.filter(Boolean)
+    : extractHashtags(content);
 
   return {
     id: clean(p.id || p._id || `p${Date.now()}`),
     _id: p._id,
+
     userId: clean(p.userId || p.user || p.authorId),
     userName,
     avatar,
@@ -227,8 +484,11 @@ function shapePost(rawPost, author = null) {
     authorVerified,
     accountVerified: authorVerified,
     isVerified: authorVerified,
+    is_verified: authorVerified,
 
-    content: clean(p.content),
+    content,
+    hashtags,
+
     image: firstImage,
     images,
     audio: clean(p.audio),
@@ -243,9 +503,21 @@ function shapePost(rawPost, author = null) {
         ? p.document_pages
         : [],
 
+    downloadsLocked:
+      p.downloadsLocked === true ||
+      p.downloads_locked === true ||
+      p.imagesLocked === true ||
+      p.images_locked === true ||
+      p.mediaLocked === true ||
+      p.media_locked === true,
+
     mode: normalizeMode(p.mode),
-    collabInvites: Array.isArray(p.collabInvites) ? p.collabInvites.map(String) : [],
-    collaborators: Array.isArray(p.collaborators) ? p.collaborators.map(String) : [],
+
+    collaborators: collaboratorProfiles,
+    collaboratorProfiles,
+
+    collabInvites: collabInviteProfiles,
+    collaborationRequests: collabInviteProfiles,
 
     likedBy,
     likes: likedBy.length,
@@ -257,34 +529,84 @@ function shapePost(rawPost, author = null) {
   };
 }
 
+function idsMatch(a, b) {
+  const aa = clean(a);
+  const bb = clean(b);
+
+  if (!aa || !bb) return false;
+
+  return aa === bb;
+}
+
 function isOwner(postUserId, user) {
   const postOwnerId = clean(postUserId);
   if (!postOwnerId) return false;
 
-  const canonical = getCanonicalUserId(user);
-  const mongoId = clean(user?._id);
-  const supabaseId = clean(user?.id);
-  const externalId = clean(user?.externalId);
+  const ids = [
+    getCanonicalUserId(user),
+    user?._id,
+    user?.id,
+    user?.externalId,
+    user?.supabaseId,
+    user?.authId,
+  ]
+    .map(clean)
+    .filter(Boolean);
 
-  return Boolean(
-    (canonical && postOwnerId === canonical) ||
-      (mongoId && postOwnerId === mongoId) ||
-      (supabaseId && postOwnerId === supabaseId) ||
-      (externalId && postOwnerId === externalId)
-  );
+  return ids.some((id) => idsMatch(id, postOwnerId));
 }
 
 function isCollaborator(post, user) {
-  const canonical = getCanonicalUserId(user);
-  if (!canonical) return false;
+  const ids = [
+    getCanonicalUserId(user),
+    user?._id,
+    user?.id,
+    user?.externalId,
+    user?.supabaseId,
+    user?.authId,
+  ]
+    .map(clean)
+    .filter(Boolean);
+
+  if (!ids.length) return false;
 
   const collaborators = Array.isArray(post?.collaborators) ? post.collaborators : [];
 
-  return collaborators.map(String).includes(String(canonical));
+  return collaborators.some((item) => {
+    const rawId =
+      typeof item === 'string'
+        ? item
+        : clean(item?._id || item?.id || item?.userId || item?.externalId || item?.supabaseId);
+
+    return ids.some((id) => idsMatch(id, rawId));
+  });
 }
 
 function canEdit(post, user) {
   return isOwner(post?.userId, user) || isCollaborator(post, user);
+}
+
+function setDocField(doc, key, value) {
+  try {
+    doc.set(key, value, { strict: false });
+    doc.markModified(key);
+  } catch {
+    doc[key] = value;
+  }
+}
+
+function getPostOwnerId(post) {
+  return clean(post?.userId || post?.user || post?.authorId);
+}
+
+async function getShapedPostById(id) {
+  const doc = await Post.findOne({ id }).lean();
+  if (!doc) return null;
+
+  const userMap = await buildUserMapForPosts([doc]);
+  const author = getUserFromMap(userMap, doc.userId);
+
+  return shapePost(doc, author, userMap);
 }
 
 router.get('/', (req, res) => {
@@ -312,12 +634,11 @@ router.get('/', (req, res) => {
       if (mode) query.mode = mode;
 
       const list = await Post.find(query).sort({ createdAt: -1 }).limit(200).lean();
-
       const userMap = await buildUserMapForPosts(list);
 
       const shaped = (list || []).map((post) => {
-        const author = userMap.get(clean(post.userId));
-        return shapePost(post, author);
+        const author = getUserFromMap(userMap, post.userId);
+        return shapePost(post, author, userMap);
       });
 
       let filtered = mode ? shaped.filter((post) => post.mode === mode) : shaped;
@@ -382,6 +703,8 @@ router.post('/', requireAuth, (req, res) => {
       documents = [],
       documentUrl = '',
       documentPages = [],
+      downloadsLocked = false,
+      hashtags = [],
     } = req.body || {};
 
     const safeImages = Array.isArray(images) ? images.filter(Boolean).slice(0, 5) : [];
@@ -394,6 +717,11 @@ router.post('/', requireAuth, (req, res) => {
     const currentUserName = getUserDisplayName(fullUser || req.user, req.user?.name);
     const currentUserAvatar = getUserAvatar(fullUser || req.user, req.user?.avatar);
     const currentUserVerified = isVerifiedUser(fullUser) || isVerifiedUser(req.user);
+
+    const safeContent = clean(content);
+    const safeHashtags = Array.isArray(hashtags) && hashtags.length
+      ? hashtags.filter(Boolean).slice(0, 10)
+      : extractHashtags(safeContent);
 
     if (await mongoReady()) {
       const created = await Post.create({
@@ -408,22 +736,27 @@ router.post('/', requireAuth, (req, res) => {
         authorVerified: currentUserVerified,
         accountVerified: currentUserVerified,
         isVerified: currentUserVerified,
+        is_verified: currentUserVerified,
 
-        content: clean(content),
+        content: safeContent,
+        hashtags: safeHashtags,
+
         image: firstImage || '',
         images: safeImages,
         audio: audio || '',
         video: video || videoUrl || '',
         videoUrl: videoUrl || video || '',
+
         documents: Array.isArray(documents) ? documents : [],
         documentUrl: documentUrl || '',
         documentPages: Array.isArray(documentPages) ? documentPages : [],
+
+        downloadsLocked: downloadsLocked === true,
 
         mode: normalizeMode(mode),
         collabInvites: [],
         collaborators: [],
         likedBy: [],
-        likes: 0,
         shares: 0,
         comments: [],
       });
@@ -442,7 +775,9 @@ router.post('/', requireAuth, (req, res) => {
         userVerified: currentUserVerified,
         authorVerified: currentUserVerified,
         accountVerified: currentUserVerified,
-        content: clean(content),
+        isVerified: currentUserVerified,
+        content: safeContent,
+        hashtags: safeHashtags,
         image: firstImage || '',
         images: safeImages,
         audio: audio || '',
@@ -462,7 +797,9 @@ router.post('/', requireAuth, (req, res) => {
       userVerified: currentUserVerified,
       authorVerified: currentUserVerified,
       accountVerified: currentUserVerified,
-      content: clean(content),
+      isVerified: currentUserVerified,
+      content: safeContent,
+      hashtags: safeHashtags,
       image: firstImage || '',
       images: safeImages,
       audio: audio || '',
@@ -471,12 +808,14 @@ router.post('/', requireAuth, (req, res) => {
       documents: Array.isArray(documents) ? documents : [],
       documentUrl: documentUrl || '',
       documentPages: Array.isArray(documentPages) ? documentPages : [],
+      downloadsLocked: downloadsLocked === true,
       likedBy: [],
-      likes: 0,
       shares: 0,
       comments: [],
       createdAt: new Date().toISOString(),
       mode: normalizeMode(mode),
+      collabInvites: [],
+      collaborators: [],
     };
 
     posts.unshift(post);
@@ -485,6 +824,36 @@ router.post('/', requireAuth, (req, res) => {
     return res.status(201).json(shapePost(post));
   })().catch((err) => {
     console.error('Create post error:', err?.message || err);
+    res.status(500).json({ error: 'server_error' });
+  });
+});
+
+router.patch('/:id/downloads-lock', requireAuth, (req, res) => {
+  (async () => {
+    const { id } = req.params;
+    const locked = req.body?.locked === true || req.body?.downloadsLocked === true;
+
+    if (!(await mongoReady())) {
+      return res.status(501).json({ error: 'not_supported' });
+    }
+
+    const doc = await Post.findOne({ id });
+    if (!doc) return res.status(404).json({ error: 'Not found' });
+
+    if (!isOwner(doc.userId, req.user)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    setDocField(doc, 'downloadsLocked', locked);
+    setDocField(doc, 'imagesLocked', locked);
+    setDocField(doc, 'mediaLocked', locked);
+
+    await doc.save();
+
+    const shaped = await getShapedPostById(id);
+    return res.json(shaped);
+  })().catch((err) => {
+    console.error('Downloads lock error:', err?.message || err);
     res.status(500).json({ error: 'server_error' });
   });
 });
@@ -509,11 +878,12 @@ router.post('/:id/like', requireAuth, (req, res) => {
         doc.likedBy.push(userId);
       }
 
+      doc.markModified('likedBy');
       await doc.save();
 
       try {
         const likedNow = doc.likedBy.map(String).includes(String(userId));
-        const ownerId = clean(doc.userId);
+        const ownerId = getPostOwnerId(doc);
 
         if (likedNow && ownerId && ownerId !== userId) {
           createNotification(req, {
@@ -528,8 +898,8 @@ router.post('/:id/like', requireAuth, (req, res) => {
         }
       } catch {}
 
-      const author = await getUserByAnyId(doc.userId);
-      return res.json(shapePost(doc, author));
+      const shaped = await getShapedPostById(id);
+      return res.json(shaped);
     }
 
     if (dbReady) {
@@ -569,11 +939,11 @@ router.post('/:id/share', requireAuth, (req, res) => {
       const doc = await Post.findOne({ id });
       if (!doc) return res.status(404).json({ error: 'Not found' });
 
-      doc.shares = Number(doc.shares || 0) + 1;
+      setDocField(doc, 'shares', Number(doc.shares || 0) + 1);
       await doc.save();
 
       try {
-        const ownerId = clean(doc.userId);
+        const ownerId = getPostOwnerId(doc);
 
         if (ownerId && ownerId !== userId) {
           createNotification(req, {
@@ -588,8 +958,8 @@ router.post('/:id/share', requireAuth, (req, res) => {
         }
       } catch {}
 
-      const author = await getUserByAnyId(doc.userId);
-      return res.json(shapePost(doc, author));
+      const shaped = await getShapedPostById(id);
+      return res.json(shaped);
     }
 
     const p = posts.find((x) => x.id === id);
@@ -605,101 +975,99 @@ router.post('/:id/share', requireAuth, (req, res) => {
   });
 });
 
-router.post('/:id/comment', requireAuth, (req, res) => {
-  (async () => {
-    const { id } = req.params;
-    const text = clean(req.body?.text || req.body?.content);
-    const voiceUrl = clean(req.body?.voiceUrl || req.body?.voice_url);
-    const type = voiceUrl ? 'voice' : 'text';
+async function addCommentHandler(req, res) {
+  const { id } = req.params;
+  const text = clean(req.body?.text || req.body?.content);
+  const voiceUrl = clean(req.body?.voiceUrl || req.body?.voice_url || req.body?.audio || req.body?.url);
+  const type = voiceUrl ? 'voice' : 'text';
 
-    const userId = getCanonicalUserId(req.user);
-    const fullUser = await getUserByAnyId(userId);
+  const userId = getCanonicalUserId(req.user);
+  const fullUser = await getUserByAnyId(userId);
 
-    const comment = normalizeComment({
-      id: `c${Date.now()}`,
-      userId,
-      userName: getUserDisplayName(fullUser || req.user, req.user?.name),
-      userAvatar: getUserAvatar(fullUser || req.user, req.user?.avatar),
-      content: text,
-      text,
-      type,
-      voiceUrl,
-      createdAt: new Date().toISOString(),
-      timestamp: new Date().toISOString(),
-    });
+  if (!text && !voiceUrl) {
+    return res.status(400).json({ error: 'comment_required' });
+  }
 
-    if (await mongoReady()) {
-      const doc = await Post.findOne({ id });
-      if (!doc) return res.status(404).json({ error: 'Not found' });
+  const comment = normalizeComment({
+    id: `c${Date.now()}`,
+    userId,
+    userName: getUserDisplayName(fullUser || req.user, req.user?.name),
+    userAvatar: getUserAvatar(fullUser || req.user, req.user?.avatar),
+    content: text,
+    text,
+    type,
+    voiceUrl,
+    createdAt: new Date().toISOString(),
+    timestamp: new Date().toISOString(),
+  });
 
-      if (!Array.isArray(doc.comments)) doc.comments = [];
+  if (await mongoReady()) {
+    const doc = await Post.findOne({ id });
+    if (!doc) return res.status(404).json({ error: 'Not found' });
 
-      doc.comments.push(comment);
-      await doc.save();
+    if (!Array.isArray(doc.comments)) doc.comments = [];
 
-      try {
-        const ownerId = clean(doc.userId);
+    doc.comments.push(comment);
+    doc.markModified('comments');
 
-        if (ownerId && ownerId !== userId) {
-          createNotification(req, {
-            toUserId: ownerId,
-            fromUserId: userId,
-            type: type === 'voice' ? 'voice_comment' : 'comment',
-            title: type === 'voice' ? 'New Voice Reply' : 'New Comment',
-            message: `${comment.userName || 'Someone'} replied to your post`,
-            actionUrl: '/feed',
-            meta: { postId: id, commentId: comment.id },
-          }).catch(() => {});
-        }
-      } catch {}
+    await doc.save();
 
-      return res.status(201).json(comment);
-    }
+    try {
+      const ownerId = getPostOwnerId(doc);
 
-    if (dbReady) {
-      const c = postsRepo.addComment(id, {
-        id: comment.id,
-        userId,
-        userName: comment.userName,
-        text: comment.content,
-      });
-
-      if (!c) return res.status(404).json({ error: 'Not found' });
-
-      return res.status(201).json(normalizeComment(c));
-    }
-
-    const p = posts.find((x) => x.id === id);
-    if (!p) return res.status(404).json({ error: 'Not found' });
-
-    if (!Array.isArray(p.comments)) p.comments = [];
-
-    p.comments.push(comment);
-
-    saveJSON('posts.json', posts).catch(() => {});
+      if (ownerId && ownerId !== userId) {
+        createNotification(req, {
+          toUserId: ownerId,
+          fromUserId: userId,
+          type: type === 'voice' ? 'voice_comment' : 'comment',
+          title: type === 'voice' ? 'New Voice Reply' : 'New Comment',
+          message: `${comment.userName || 'Someone'} replied to your post`,
+          actionUrl: '/feed',
+          meta: { postId: id, commentId: comment.id },
+        }).catch(() => {});
+      }
+    } catch {}
 
     return res.status(201).json(comment);
-  })().catch((err) => {
+  }
+
+  if (dbReady) {
+    const c = postsRepo.addComment(id, {
+      id: comment.id,
+      userId,
+      userName: comment.userName,
+      text: comment.content,
+    });
+
+    if (!c) return res.status(404).json({ error: 'Not found' });
+
+    return res.status(201).json(normalizeComment(c));
+  }
+
+  const p = posts.find((x) => x.id === id);
+  if (!p) return res.status(404).json({ error: 'Not found' });
+
+  if (!Array.isArray(p.comments)) p.comments = [];
+
+  p.comments.push(comment);
+
+  saveJSON('posts.json', posts).catch(() => {});
+
+  return res.status(201).json(comment);
+}
+
+router.post('/:id/comment', requireAuth, (req, res) => {
+  addCommentHandler(req, res).catch((err) => {
     console.error('Comment error:', err?.message || err);
     res.status(500).json({ error: 'server_error' });
   });
 });
 
 router.post('/:id/voice-comment', requireAuth, (req, res) => {
-  req.body = {
-    ...(req.body || {}),
-    voiceUrl: req.body?.voiceUrl || req.body?.audio || req.body?.url,
-  };
-
-  return router.handle(
-    {
-      ...req,
-      method: 'POST',
-      url: `/${req.params.id}/comment`,
-      originalUrl: req.originalUrl,
-    },
-    res
-  );
+  addCommentHandler(req, res).catch((err) => {
+    console.error('Voice comment error:', err?.message || err);
+    res.status(500).json({ error: 'server_error' });
+  });
 });
 
 router.patch('/:id', requireAuth, (req, res) => {
@@ -715,11 +1083,13 @@ router.patch('/:id', requireAuth, (req, res) => {
         return res.status(403).json({ error: 'Forbidden' });
       }
 
-      doc.content = nextContent || doc.content;
+      setDocField(doc, 'content', nextContent || doc.content);
+      setDocField(doc, 'hashtags', extractHashtags(nextContent || doc.content));
+
       await doc.save();
 
-      const author = await getUserByAnyId(doc.userId);
-      return res.json(shapePost(doc, author));
+      const shaped = await getShapedPostById(id);
+      return res.json(shaped);
     }
 
     if (dbReady) {
@@ -747,6 +1117,7 @@ router.patch('/:id', requireAuth, (req, res) => {
     }
 
     p.content = nextContent || p.content;
+    p.hashtags = extractHashtags(p.content);
 
     saveJSON('posts.json', posts).catch(() => {});
 
@@ -772,7 +1143,7 @@ router.delete('/:id', requireAuth, (req, res) => {
 
       await Post.deleteOne({ id });
 
-      return res.json({ ok: true });
+      return res.json({ ok: true, id });
     }
 
     if (dbReady) {
@@ -788,7 +1159,7 @@ router.delete('/:id', requireAuth, (req, res) => {
       postsRepo._db.prepare(`DELETE FROM post_likes WHERE postId=?`).run(id);
       postsRepo._db.prepare(`DELETE FROM comments WHERE postId=?`).run(id);
 
-      return res.json({ ok: true });
+      return res.json({ ok: true, id });
     }
 
     const idx = posts.findIndex((x) => x.id === id);
@@ -802,7 +1173,7 @@ router.delete('/:id', requireAuth, (req, res) => {
     posts.splice(idx, 1);
     saveJSON('posts.json', posts).catch(() => {});
 
-    return res.json({ ok: true });
+    return res.json({ ok: true, id });
   })().catch((err) => {
     console.error('Delete post error:', err?.message || err);
     res.status(500).json({ error: 'server_error' });
@@ -812,71 +1183,113 @@ router.delete('/:id', requireAuth, (req, res) => {
 router.post('/:id/collab/invite', requireAuth, (req, res) => {
   (async () => {
     const { id } = req.params;
-    const inviteeIdRaw = clean(req.body?.userId);
-
-    if (!inviteeIdRaw) {
-      return res.status(400).json({ error: 'userId_required' });
-    }
-
-    const inviterId = getCanonicalUserId(req.user);
 
     if (!(await mongoReady())) {
       return res.status(501).json({ error: 'not_supported' });
     }
 
     const doc = await Post.findOne({ id });
-
     if (!doc) return res.status(404).json({ error: 'Not found' });
 
-    if (!isOwner(doc.userId, req.user)) {
-      return res.status(403).json({ error: 'Forbidden' });
+    const requesterId = getCanonicalUserId(req.user);
+    const postOwnerId = getPostOwnerId(doc);
+    const ownerRequest = isOwner(doc.userId, req.user);
+
+    const rawTarget =
+      clean(req.body?.userId) ||
+      clean(req.body?.inviteeId) ||
+      clean(req.body?.collaboratorId) ||
+      clean(req.body?.code);
+
+    const targetUserId = ownerRequest
+      ? await resolveUserIdOrCode(rawTarget)
+      : requesterId;
+
+    if (!targetUserId) {
+      return res.status(400).json({ error: 'userId_required' });
     }
 
-    if (String(inviteeIdRaw) === String(inviterId)) {
+    if (ownerRequest && idsMatch(targetUserId, requesterId)) {
       return res.status(400).json({ error: 'cannot_invite_self' });
     }
 
     const invites = Array.isArray(doc.collabInvites) ? doc.collabInvites.map(String) : [];
     const collaborators = Array.isArray(doc.collaborators) ? doc.collaborators.map(String) : [];
 
-    if (collaborators.includes(String(inviteeIdRaw))) {
-      return res.json({ ok: true, status: 'already_collaborator' });
+    if (collaborators.some((id) => idsMatch(id, targetUserId))) {
+      return res.json({
+        ok: true,
+        status: 'already_collaborator',
+        post: await getShapedPostById(id),
+      });
     }
 
-    if (!invites.includes(String(inviteeIdRaw))) {
-      invites.push(String(inviteeIdRaw));
+    if (collaborators.length >= 4) {
+      return res.status(400).json({ error: 'collaborator_limit_reached' });
     }
 
-    doc.collabInvites = invites;
+    if (!invites.some((id) => idsMatch(id, targetUserId))) {
+      invites.push(String(targetUserId));
+    }
+
+    setDocField(doc, 'collabInvites', invites);
     await doc.save();
 
     try {
-      createNotification(req, {
-        toUserId: String(inviteeIdRaw),
-        fromUserId: String(inviterId),
-        type: 'collab_invite',
-        title: 'Collaboration Invite',
-        message: `${clean(req.user?.name) || 'Someone'} invited you to collaborate on a post`,
-        actionUrl: '/feed',
-        meta: { postId: id },
-      }).catch(() => {});
+      if (ownerRequest) {
+        createNotification(req, {
+          toUserId: String(targetUserId),
+          fromUserId: String(requesterId),
+          type: 'collab_invite',
+          title: 'Collaboration Invite',
+          message: `${clean(req.user?.name) || 'Someone'} invited you to collaborate on a post`,
+          actionUrl: '/feed',
+          meta: { postId: id },
+        }).catch(() => {});
+      } else {
+        createNotification(req, {
+          toUserId: String(postOwnerId),
+          fromUserId: String(requesterId),
+          type: 'collab_request',
+          title: 'Collaboration Request',
+          message: `${clean(req.user?.name) || 'Someone'} wants to be added as collaborator`,
+          actionUrl: '/feed',
+          meta: { postId: id, requesterId },
+        }).catch(() => {});
+      }
     } catch {}
 
     return res.json({
       ok: true,
-      collabInvites: doc.collabInvites,
-      collaborators: doc.collaborators,
+      status: ownerRequest ? 'invite_sent' : 'request_sent',
+      post: await getShapedPostById(id),
     });
   })().catch((err) => {
-    console.error('Collab invite error:', err?.message || err);
+    console.error('Collab invite/request error:', err?.message || err);
     res.status(500).json({ error: 'server_error' });
   });
+});
+
+router.post('/:id/collab/request', requireAuth, (req, res) => {
+  req.body = {
+    ...(req.body || {}),
+    userId: getCanonicalUserId(req.user),
+  };
+
+  return router.handle(
+    {
+      ...req,
+      method: 'POST',
+      url: `/${req.params.id}/collab/invite`,
+      originalUrl: req.originalUrl,
+    },
+    res
+  );
 });
 
 router.post('/:id/collab/accept', requireAuth, (req, res) => {
   (async () => {
     const { id } = req.params;
-    const userId = getCanonicalUserId(req.user);
 
     if (!(await mongoReady())) {
       return res.status(501).json({ error: 'not_supported' });
@@ -885,40 +1298,67 @@ router.post('/:id/collab/accept', requireAuth, (req, res) => {
     const doc = await Post.findOne({ id });
     if (!doc) return res.status(404).json({ error: 'Not found' });
 
-    const invites = Array.isArray(doc.collabInvites) ? doc.collabInvites.map(String) : [];
+    const currentUserId = getCanonicalUserId(req.user);
+    const ownerRequest = isOwner(doc.userId, req.user);
 
-    if (!invites.includes(String(userId))) {
+    const requestedTarget =
+      clean(req.body?.userId) ||
+      clean(req.body?.inviteeId) ||
+      clean(req.body?.collaboratorId) ||
+      clean(req.query?.userId);
+
+    const targetUserId = ownerRequest
+      ? await resolveUserIdOrCode(requestedTarget)
+      : currentUserId;
+
+    if (!targetUserId) {
+      return res.status(400).json({ error: 'userId_required' });
+    }
+
+    const invites = Array.isArray(doc.collabInvites) ? doc.collabInvites.map(String) : [];
+    const collaborators = Array.isArray(doc.collaborators) ? doc.collaborators.map(String) : [];
+
+    const hasInvite = invites.some((item) => idsMatch(item, targetUserId));
+
+    if (!hasInvite) {
       return res.status(403).json({ error: 'No invite' });
     }
 
-    const nextInvites = invites.filter((x) => x !== String(userId));
-    const collaborators = Array.isArray(doc.collaborators) ? doc.collaborators.map(String) : [];
-
-    if (!collaborators.includes(String(userId))) {
-      collaborators.push(String(userId));
+    if (collaborators.length >= 4 && !collaborators.some((item) => idsMatch(item, targetUserId))) {
+      return res.status(400).json({ error: 'collaborator_limit_reached' });
     }
 
-    doc.collabInvites = nextInvites;
-    doc.collaborators = collaborators;
+    const nextInvites = invites.filter((item) => !idsMatch(item, targetUserId));
+
+    if (!collaborators.some((item) => idsMatch(item, targetUserId))) {
+      collaborators.push(String(targetUserId));
+    }
+
+    setDocField(doc, 'collabInvites', nextInvites);
+    setDocField(doc, 'collaborators', collaborators);
 
     await doc.save();
 
     try {
+      const postOwnerId = getPostOwnerId(doc);
+
       createNotification(req, {
-        toUserId: String(doc.userId),
-        fromUserId: String(userId),
+        toUserId: ownerRequest ? String(targetUserId) : String(postOwnerId),
+        fromUserId: String(currentUserId),
         type: 'collab_accept',
         title: 'Collaboration Accepted',
-        message: `${clean(req.user?.name) || 'Someone'} accepted your collaboration invite`,
+        message: ownerRequest
+          ? `${clean(req.user?.name) || 'Post author'} added you as collaborator`
+          : `${clean(req.user?.name) || 'Someone'} accepted your collaboration invite`,
         actionUrl: '/feed',
-        meta: { postId: id },
+        meta: { postId: id, collaboratorId: targetUserId },
       }).catch(() => {});
     } catch {}
 
     return res.json({
       ok: true,
-      collabInvites: doc.collabInvites,
-      collaborators: doc.collaborators,
+      status: 'accepted',
+      post: await getShapedPostById(id),
     });
   })().catch((err) => {
     console.error('Collab accept error:', err?.message || err);
@@ -929,7 +1369,6 @@ router.post('/:id/collab/accept', requireAuth, (req, res) => {
 router.post('/:id/collab/reject', requireAuth, (req, res) => {
   (async () => {
     const { id } = req.params;
-    const userId = getCanonicalUserId(req.user);
 
     if (!(await mongoReady())) {
       return res.status(501).json({ error: 'not_supported' });
@@ -938,23 +1377,70 @@ router.post('/:id/collab/reject', requireAuth, (req, res) => {
     const doc = await Post.findOne({ id });
     if (!doc) return res.status(404).json({ error: 'Not found' });
 
-    const invites = Array.isArray(doc.collabInvites) ? doc.collabInvites.map(String) : [];
+    const currentUserId = getCanonicalUserId(req.user);
+    const ownerRequest = isOwner(doc.userId, req.user);
 
-    if (!invites.includes(String(userId))) {
-      return res.status(403).json({ error: 'No invite' });
+    const requestedTarget =
+      clean(req.body?.userId) ||
+      clean(req.body?.inviteeId) ||
+      clean(req.body?.collaboratorId) ||
+      clean(req.query?.userId);
+
+    const targetUserId = ownerRequest
+      ? await resolveUserIdOrCode(requestedTarget)
+      : currentUserId;
+
+    if (!targetUserId) {
+      return res.status(400).json({ error: 'userId_required' });
     }
 
-    doc.collabInvites = invites.filter((x) => x !== String(userId));
+    const invites = Array.isArray(doc.collabInvites) ? doc.collabInvites.map(String) : [];
+    const nextInvites = invites.filter((item) => !idsMatch(item, targetUserId));
 
+    setDocField(doc, 'collabInvites', nextInvites);
     await doc.save();
 
     return res.json({
       ok: true,
-      collabInvites: doc.collabInvites,
-      collaborators: doc.collaborators,
+      status: 'rejected',
+      post: await getShapedPostById(id),
     });
   })().catch((err) => {
     console.error('Collab reject error:', err?.message || err);
+    res.status(500).json({ error: 'server_error' });
+  });
+});
+
+router.delete('/:id/collab/:userId', requireAuth, (req, res) => {
+  (async () => {
+    const { id, userId } = req.params;
+
+    if (!(await mongoReady())) {
+      return res.status(501).json({ error: 'not_supported' });
+    }
+
+    const doc = await Post.findOne({ id });
+    if (!doc) return res.status(404).json({ error: 'Not found' });
+
+    if (!isOwner(doc.userId, req.user)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const targetUserId = await resolveUserIdOrCode(userId);
+    const collaborators = Array.isArray(doc.collaborators) ? doc.collaborators.map(String) : [];
+
+    const nextCollaborators = collaborators.filter((item) => !idsMatch(item, targetUserId));
+
+    setDocField(doc, 'collaborators', nextCollaborators);
+    await doc.save();
+
+    return res.json({
+      ok: true,
+      status: 'removed',
+      post: await getShapedPostById(id),
+    });
+  })().catch((err) => {
+    console.error('Remove collaborator error:', err?.message || err);
     res.status(500).json({ error: 'server_error' });
   });
 });
@@ -983,8 +1469,8 @@ router.patch('/:id/comment/:commentId', requireAuth, (req, res) => {
 
       comments[idx].content = text || comments[idx].content || comments[idx].text || '';
       comments[idx].text = comments[idx].content;
-      doc.comments = comments;
 
+      setDocField(doc, 'comments', comments);
       await doc.save();
 
       return res.json(normalizeComment(comments[idx]));
@@ -1040,13 +1526,17 @@ router.delete('/:id/comment/:commentId', requireAuth, (req, res) => {
         return res.status(404).json({ error: 'Comment not found' });
       }
 
-      if (String(comments[idx].userId) !== String(userId) && !isOwner(doc.userId, req.user)) {
+      const commentOwnerId = clean(comments[idx].userId);
+      const userOwnsComment = idsMatch(commentOwnerId, userId);
+      const userOwnsPost = isOwner(doc.userId, req.user);
+
+      if (!userOwnsComment && !userOwnsPost) {
         return res.status(403).json({ error: 'Forbidden' });
       }
 
       const removed = comments.splice(idx, 1)[0];
-      doc.comments = comments;
 
+      setDocField(doc, 'comments', comments);
       await doc.save();
 
       return res.json(normalizeComment(removed));
@@ -1072,7 +1562,11 @@ router.delete('/:id/comment/:commentId', requireAuth, (req, res) => {
       return res.status(404).json({ error: 'Comment not found' });
     }
 
-    if (String(p.comments[idx].userId) !== String(userId) && !isOwner(p.userId, req.user)) {
+    const commentOwnerId = clean(p.comments[idx].userId);
+    const userOwnsComment = idsMatch(commentOwnerId, userId);
+    const userOwnsPost = isOwner(p.userId, req.user);
+
+    if (!userOwnsComment && !userOwnsPost) {
       return res.status(403).json({ error: 'Forbidden' });
     }
 
