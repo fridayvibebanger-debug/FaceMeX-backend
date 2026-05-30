@@ -10,16 +10,19 @@ const router = Router();
   REQUIRED RENDER BACKEND ENV VARIABLES:
 
   YOCO_SECRET_KEY=sk_live_xxxxxxxxx
-  YOCO_WEBHOOK_SECRET=whsec_xxxxxxxxx
   CLIENT_ORIGIN=https://facemexsocial.com
 
+  OPTIONAL BUT RECOMMENDED LATER:
+  YOCO_WEBHOOK_SECRET=whsec_xxxxxxxxx
+
   IMPORTANT:
-  Do NOT put YOCO_SECRET_KEY in Netlify.
+  Never put YOCO_SECRET_KEY in Netlify frontend.
   Only Render backend must have YOCO_SECRET_KEY.
 */
 
 const YOCO_SECRET_KEY = process.env.YOCO_SECRET_KEY || '';
 const YOCO_WEBHOOK_SECRET = process.env.YOCO_WEBHOOK_SECRET || '';
+
 const CLIENT_ORIGIN =
   process.env.CLIENT_ORIGIN ||
   process.env.FRONTEND_URL ||
@@ -32,8 +35,8 @@ const YOCO_CHECKOUTS_URL =
 const processedWebhookIds = new Set();
 
 /*
-  Payment model is defined here to fix:
-  Cannot find module '../models/Payment.js'
+  Payment model is inside this file so you do not need:
+  src/models/Payment.js
 */
 const PaymentSchema = new mongoose.Schema(
   {
@@ -117,6 +120,14 @@ PaymentSchema.index({ createdAt: -1 });
 const Payment =
   mongoose.models.Payment || mongoose.model('Payment', PaymentSchema);
 
+/*
+  Prices are in cents.
+  R99.99 = 9999
+  R299.99 = 29999
+  R999.99 = 99999
+  R1,999.99 = 199999
+  R150.00 = 15000
+*/
 const PLAN_CONFIG = {
   pro: {
     tier: 'pro',
@@ -124,24 +135,28 @@ const PLAN_CONFIG = {
     amountCents: 9999,
     type: 'tier',
   },
+
   creator: {
     tier: 'creator',
     name: 'FaceMeX Creator',
     amountCents: 29999,
     type: 'tier',
   },
+
   business: {
     tier: 'business',
     name: 'FaceMeX Business',
     amountCents: 99999,
     type: 'tier',
   },
+
   exclusive: {
     tier: 'exclusive',
     name: 'FaceMeX Exclusive',
     amountCents: 199999,
     type: 'tier',
   },
+
   verified: {
     tier: 'verified',
     name: 'FaceMeX Verified Badge',
@@ -168,9 +183,9 @@ function getPlanConfig(tier) {
   return PLAN_CONFIG[normalizeTier(tier)] || null;
 }
 
-function addOneMonth() {
+function addThirtyDays() {
   const date = new Date();
-  date.setMonth(date.getMonth() + 1);
+  date.setDate(date.getDate() + 30);
   return date;
 }
 
@@ -220,6 +235,7 @@ async function yocoRequest(url, options = {}) {
   const text = await response.text();
 
   let data = {};
+
   try {
     data = text ? JSON.parse(text) : {};
   } catch {
@@ -321,12 +337,15 @@ async function activateUserAfterPayment(payment) {
     };
   }
 
+  const expiresAt = addThirtyDays();
+
   await updateUserAccess(payment.user, {
     $set: {
       tier: config.tier,
       subscriptionTier: config.tier,
       subscriptionStatus: 'active',
-      subscriptionExpiresAt: addOneMonth(),
+      subscriptionStartedAt: new Date(),
+      subscriptionExpiresAt: expiresAt,
       updatedAt: new Date(),
     },
   });
@@ -335,6 +354,7 @@ async function activateUserAfterPayment(payment) {
     activated: true,
     type: 'tier',
     tier: config.tier,
+    expiresAt,
   };
 }
 
@@ -389,6 +409,7 @@ function extractWebhookSignatures(headerValue) {
     .split(/\s+/)
     .flatMap((part) => {
       const cleanPart = part.trim();
+
       if (!cleanPart) return [];
 
       if (cleanPart.includes(',')) {
@@ -405,6 +426,12 @@ function extractWebhookSignatures(headerValue) {
 }
 
 function verifyYocoWebhookSignature(req, rawBody) {
+  /*
+    Webhook is optional for now.
+
+    If YOCO_WEBHOOK_SECRET is missing, webhook verification is skipped.
+    Your main payment flow still works through /api/payments/verify.
+  */
   if (!YOCO_WEBHOOK_SECRET) {
     console.warn('YOCO_WEBHOOK_SECRET missing. Webhook verification skipped.');
     return true;
@@ -630,6 +657,7 @@ async function createCheckoutHandler(req, res) {
         planName: config.name,
         userId: String(user._id),
         amountCents: config.amountCents,
+        accessDays: 30,
       },
       status: 'pending',
     });
@@ -658,6 +686,7 @@ async function createCheckoutHandler(req, res) {
         userId: String(user._id),
         tier: config.tier,
         planName: config.name,
+        accessDays: 30,
       },
       lineItems: [
         {
@@ -706,6 +735,7 @@ async function createCheckoutHandler(req, res) {
       tier: config.tier,
       amount: config.amountCents,
       currency: 'ZAR',
+      accessDays: 30,
     });
   } catch (err) {
     console.error('payments/initiate error:', err?.message || err);
@@ -780,7 +810,8 @@ async function verifyPaymentHandler(req, res) {
         active: true,
         payment,
         tier: payment.tier,
-        message: 'Payment confirmed and subscription activated.',
+        accessDays: 30,
+        message: 'Payment confirmed. Access activated for 30 days.',
       });
     }
 
@@ -843,6 +874,7 @@ router.get('/confirm', requireAuth, async (req, res) => {
 /*
   Yoco webhook route.
   Do NOT add requireAuth here.
+  This is optional until YOCO_WEBHOOK_SECRET is added.
 */
 router.post('/webhook', async (req, res) => {
   try {
