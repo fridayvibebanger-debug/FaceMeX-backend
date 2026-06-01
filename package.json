@@ -9,6 +9,7 @@
     "start": "node index.js"
   },
   "dependencies": {
+    "@azure/storage-blob": "^12.27.0",
     "@supabase/supabase-js": "^2.49.8",
     "bcryptjs": "^2.4.3",
     "body-parser": "^1.20.2",
@@ -22,6 +23,7 @@
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.6.2",
     "morgan": "^1.10.0",
+    "multer": "^2.0.2",
     "openai": "^6.9.1",
     "socket.io": "^4.7.5",
     "stripe": "^14.25.0"
