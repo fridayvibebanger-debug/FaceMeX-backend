@@ -32,6 +32,7 @@ import friendsRouter from './routes/friends.js';
 import jobsRouter from './routes/jobs.js';
 import proGroupsRouter from './routes/proGroups.js';
 import marketplaceRouter from './routes/marketplace.js';
+import azureUploadsRouter from './routes/azureUploads.js';
 import uploadsRouter from './routes/uploads.js';
 import translateRouter from './routes/translate.js';
 
@@ -319,6 +320,15 @@ app.get('/api/health', async (_req, res) => {
     cloudinary: {
       configured: cloudinaryConfigured,
     },
+    azureBlob: {
+      configured:
+        !!process.env.AZURE_STORAGE_CONNECTION_STRING &&
+        !!process.env.AZURE_STORAGE_ACCOUNT &&
+        !!process.env.AZURE_STORAGE_CONTAINER,
+      account: process.env.AZURE_STORAGE_ACCOUNT || null,
+      container: process.env.AZURE_STORAGE_CONTAINER || null,
+      publicUrl: process.env.AZURE_BLOB_PUBLIC_URL || null,
+    },
     yoco: {
       secretKeyConfigured: !!process.env.YOCO_SECRET_KEY,
       webhookSecretConfigured: !!process.env.YOCO_WEBHOOK_SECRET,
@@ -367,7 +377,17 @@ app.use('/api/friends', friendsRouter);
 app.use('/api/jobs', jobsRouter);
 app.use('/api/pro-groups', proGroupsRouter);
 app.use('/api/marketplace', marketplaceRouter);
+
+/*
+  Put Azure uploads before the normal uploads router.
+  Endpoint:
+  /api/uploads/azure/image
+  /api/uploads/azure/images
+  /api/uploads/azure/test
+*/
+app.use('/api/uploads/azure', azureUploadsRouter);
 app.use('/api/uploads', uploadsRouter);
+
 app.use('/api/translate', translateRouter);
 
 /*
@@ -393,13 +413,6 @@ io.on('connection', (socket) => {
       socketId: socket.id,
     });
   });
-
-  /*
-    AUDIO / VIDEO CALL SIGNALING
-
-    This backend does not carry audio or video.
-    It only helps users exchange WebRTC offer, answer, and ICE candidates.
-  */
 
   socket.on('call:invite', (payload = {}) => {
     const {
@@ -677,16 +690,6 @@ io.on('connection', (socket) => {
     });
   });
 
-  /*
-    LIVE TRANSLATION FOR CALLS
-
-    Frontend flow:
-    1. Browser listens to speech and converts voice to text.
-    2. Frontend sends that text here using call:translate.
-    3. Backend translates using Azure.
-    4. Backend sends translated subtitle back into the call room.
-  */
-
   socket.on('call:translation-toggle', (payload = {}) => {
     const roomId = getCallRoom(payload);
 
@@ -761,10 +764,6 @@ io.on('connection', (socket) => {
     } catch {}
   });
 
-  /*
-    COLLAB STORY SOCKETS
-  */
-
   socket.on('story:join', ({ code, userId } = {}) => {
     if (!code) return;
 
@@ -785,10 +784,6 @@ io.on('connection', (socket) => {
       createdAt: new Date().toISOString(),
     });
   });
-
-  /*
-    WORLD PRESENCE SOCKETS
-  */
 
   socket.on('world:join', ({ worldId, user } = {}) => {
     if (!worldId) return;
