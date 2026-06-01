@@ -6,17 +6,18 @@ import morgan from 'morgan';
 import cookieParser from 'cookie-parser';
 import Stripe from 'stripe';
 import bodyParser from 'body-parser';
-import { setMe } from './utils/userStore.js';
 import dotenv from 'dotenv';
 import { Server as SocketIOServer } from 'socket.io';
+
+import { setMe } from './utils/userStore.js';
 import { connectDb } from './lib/db.js';
+import { dbReady, lastError } from './utils/sqlite.js';
 
 import usersRouter from './routes/users.js';
 import postsRouter from './routes/posts.js';
 import eventsRouter from './routes/events.js';
 import notificationsRouter from './routes/notifications.js';
 import reactionsRouter from './routes/reactions.js';
-import { dbReady, lastError } from './utils/sqlite.js';
 import billingRouter from './routes/billing.js';
 import paymentsRouter from './routes/payments.js';
 import aiRouter from './routes/ai.js';
@@ -32,6 +33,7 @@ import jobsRouter from './routes/jobs.js';
 import proGroupsRouter from './routes/proGroups.js';
 import marketplaceRouter from './routes/marketplace.js';
 import uploadsRouter from './routes/uploads.js';
+import translateRouter from './routes/translate.js';
 
 try {
   const rootEnvLocal = new URL('../.env.local', import.meta.url);
@@ -69,9 +71,134 @@ const io = new SocketIOServer(server, {
     },
     credentials: true,
   },
+  transports: ['websocket', 'polling'],
+  pingTimeout: 30000,
+  pingInterval: 25000,
 });
 
 app.set('io', io);
+
+/*
+  REAL-TIME MEMORY
+*/
+const worldPresence = new Map();
+const userSockets = new Map();
+const activeCalls = new Map();
+
+function makeId(prefix = 'id') {
+  return `${prefix}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function addUserSocket(userId, socketId) {
+  const id = String(userId || '').trim();
+  if (!id) return;
+
+  if (!userSockets.has(id)) {
+    userSockets.set(id, new Set());
+  }
+
+  userSockets.get(id).add(socketId);
+}
+
+function removeUserSocket(userId, socketId) {
+  const id = String(userId || '').trim();
+  if (!id || !userSockets.has(id)) return;
+
+  const set = userSockets.get(id);
+  set.delete(socketId);
+
+  if (set.size === 0) {
+    userSockets.delete(id);
+  }
+}
+
+function getCallRoom(payload = {}) {
+  if (payload.callId && activeCalls.has(payload.callId)) {
+    return activeCalls.get(payload.callId).roomId;
+  }
+
+  return payload.roomId || null;
+}
+
+function sendToUser(userId, event, payload) {
+  const id = String(userId || '').trim();
+  if (!id) return;
+
+  io.to(`user:${id}`).emit(event, payload);
+}
+
+function cleanupCall(callId, reason = 'ended') {
+  if (!callId || !activeCalls.has(callId)) return;
+
+  const call = activeCalls.get(callId);
+
+  io.to(call.roomId).emit('call:cleanup', {
+    callId,
+    roomId: call.roomId,
+    reason,
+  });
+
+  activeCalls.delete(callId);
+}
+
+async function translateText({ text, to = 'en', from }) {
+  const cleanText = String(text || '').trim();
+
+  if (!cleanText) {
+    throw new Error('Text is required');
+  }
+
+  const key = process.env.AZURE_TRANSLATOR_KEY;
+  const region = process.env.AZURE_TRANSLATOR_REGION;
+  const endpoint = (
+    process.env.AZURE_TRANSLATOR_ENDPOINT ||
+    'https://api.cognitive.microsofttranslator.com'
+  ).replace(/\/+$/, '');
+
+  if (!key || !region) {
+    throw new Error('Azure Translator is not configured');
+  }
+
+  const params = new URLSearchParams({
+    'api-version': '3.0',
+    to,
+  });
+
+  if (from) {
+    params.set('from', from);
+  }
+
+  const response = await fetch(`${endpoint}/translate?${params.toString()}`, {
+    method: 'POST',
+    headers: {
+      'Ocp-Apim-Subscription-Key': key,
+      'Ocp-Apim-Subscription-Region': region,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify([{ text: cleanText }]),
+  });
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    const message =
+      data?.error?.message ||
+      data?.message ||
+      'Translation failed';
+
+    throw new Error(message);
+  }
+
+  const result = data?.[0];
+  const translatedText = result?.translations?.[0]?.text || '';
+
+  return {
+    originalText: cleanText,
+    translatedText,
+    detectedLanguage: result?.detectedLanguage || null,
+    to,
+  };
+}
 
 app.use(helmet());
 app.use(morgan('dev'));
@@ -124,6 +251,7 @@ if (process.env.STRIPE_SECRET_KEY) {
           } catch {}
           break;
         }
+
         default:
           break;
       }
@@ -135,9 +263,7 @@ if (process.env.STRIPE_SECRET_KEY) {
 
 /*
   YOCO WEBHOOK
-  IMPORTANT:
-  This must come BEFORE express.json().
-  Yoco signature verification needs the raw request body.
+  Must stay before express.json()
 */
 app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
 
@@ -202,6 +328,20 @@ app.get('/api/health', async (_req, res) => {
       configured: !!process.env.STRIPE_SECRET_KEY,
       webhookConfigured: !!process.env.STRIPE_WEBHOOK_SECRET,
     },
+    translator: {
+      configured:
+        !!process.env.AZURE_TRANSLATOR_KEY &&
+        !!process.env.AZURE_TRANSLATOR_REGION,
+      region: process.env.AZURE_TRANSLATOR_REGION || null,
+      endpoint:
+        process.env.AZURE_TRANSLATOR_ENDPOINT ||
+        'https://api.cognitive.microsofttranslator.com',
+    },
+    socket: {
+      configured: true,
+      onlineUsers: userSockets.size,
+      activeCalls: activeCalls.size,
+    },
   });
 });
 
@@ -228,54 +368,417 @@ app.use('/api/jobs', jobsRouter);
 app.use('/api/pro-groups', proGroupsRouter);
 app.use('/api/marketplace', marketplaceRouter);
 app.use('/api/uploads', uploadsRouter);
+app.use('/api/translate', translateRouter);
 
-const worldPresence = new Map();
-
+/*
+  REAL-TIME SOCKET SYSTEM
+*/
 io.on('connection', (socket) => {
-  socket.emit('connected', { ok: true });
-
-  socket.on('user:join', ({ userId }) => {
-    if (!userId) return;
-    socket.join(`user:${userId}`);
+  socket.emit('connected', {
+    ok: true,
+    socketId: socket.id,
   });
 
-  socket.on('call:join', ({ roomId, userId }) => {
-    if (!roomId) return;
-    socket.join(roomId);
-    socket.to(roomId).emit('call:joined', { userId, socketId: socket.id });
-  });
+  socket.on('user:join', ({ userId } = {}) => {
+    const id = String(userId || '').trim();
+    if (!id) return;
 
-  socket.on('call:offer', ({ roomId, offer, from }) => {
-    if (!roomId || !offer) return;
-    socket.to(roomId).emit('call:offer', { offer, from: from || socket.id });
-  });
+    socket.data.userId = id;
+    socket.join(`user:${id}`);
+    addUserSocket(id, socket.id);
 
-  socket.on('call:answer', ({ roomId, answer, from }) => {
-    if (!roomId || !answer) return;
-    socket.to(roomId).emit('call:answer', { answer, from: from || socket.id });
-  });
-
-  socket.on('call:candidate', ({ roomId, candidate, from }) => {
-    if (!roomId || !candidate) return;
-    socket.to(roomId).emit('call:candidate', {
-      candidate,
-      from: from || socket.id,
+    socket.emit('user:joined', {
+      ok: true,
+      userId: id,
+      socketId: socket.id,
     });
   });
 
-  socket.on('call:end', ({ roomId, from }) => {
+  /*
+    AUDIO / VIDEO CALL SIGNALING
+
+    This backend does not carry audio or video.
+    It only helps users exchange WebRTC offer, answer, and ICE candidates.
+  */
+
+  socket.on('call:invite', (payload = {}) => {
+    const {
+      toUserId,
+      fromUserId,
+      fromUser,
+      callType = 'video',
+    } = payload;
+
+    const callerId = String(fromUserId || socket.data.userId || '').trim();
+    const receiverId = String(toUserId || '').trim();
+
+    if (!callerId || !receiverId) {
+      socket.emit('call:error', {
+        message: 'Missing caller or receiver.',
+      });
+      return;
+    }
+
+    if (callerId === receiverId) {
+      socket.emit('call:error', {
+        message: 'You cannot call yourself.',
+      });
+      return;
+    }
+
+    const receiverOnline = userSockets.has(receiverId);
+
+    if (!receiverOnline) {
+      socket.emit('call:unavailable', {
+        toUserId: receiverId,
+        message: 'User is not online.',
+      });
+      return;
+    }
+
+    const callId = makeId('call');
+    const roomId = `call-room:${callId}`;
+
+    const call = {
+      callId,
+      roomId,
+      callerId,
+      receiverId,
+      callType: callType === 'audio' ? 'audio' : 'video',
+      fromUser: fromUser || null,
+      status: 'ringing',
+      createdAt: new Date().toISOString(),
+    };
+
+    activeCalls.set(callId, call);
+
+    socket.join(roomId);
+
+    sendToUser(receiverId, 'call:incoming', {
+      callId,
+      roomId,
+      fromUserId: callerId,
+      fromUser: fromUser || null,
+      callType: call.callType,
+      createdAt: call.createdAt,
+    });
+
+    socket.emit('call:ringing', {
+      callId,
+      roomId,
+      toUserId: receiverId,
+      callType: call.callType,
+    });
+  });
+
+  socket.on('call:accept', (payload = {}) => {
+    const { callId, userId } = payload;
+
+    if (!callId || !activeCalls.has(callId)) {
+      socket.emit('call:error', {
+        message: 'Call no longer exists.',
+      });
+      return;
+    }
+
+    const call = activeCalls.get(callId);
+    const acceptingUserId = String(userId || socket.data.userId || '').trim();
+
+    if (acceptingUserId) {
+      socket.data.userId = acceptingUserId;
+      socket.join(`user:${acceptingUserId}`);
+      addUserSocket(acceptingUserId, socket.id);
+    }
+
+    socket.join(call.roomId);
+
+    call.status = 'accepted';
+    call.acceptedAt = new Date().toISOString();
+
+    activeCalls.set(callId, call);
+
+    io.to(call.roomId).emit('call:accepted', {
+      callId: call.callId,
+      roomId: call.roomId,
+      callerId: call.callerId,
+      receiverId: call.receiverId,
+      callType: call.callType,
+      acceptedBy: acceptingUserId || call.receiverId,
+    });
+  });
+
+  socket.on('call:decline', (payload = {}) => {
+    const { callId, userId, reason } = payload;
+
+    if (!callId || !activeCalls.has(callId)) return;
+
+    const call = activeCalls.get(callId);
+    const declinedBy = userId || socket.data.userId || call.receiverId;
+
+    sendToUser(call.callerId, 'call:declined', {
+      callId,
+      roomId: call.roomId,
+      declinedBy,
+      reason: reason || 'declined',
+    });
+
+    sendToUser(call.receiverId, 'call:declined', {
+      callId,
+      roomId: call.roomId,
+      declinedBy,
+      reason: reason || 'declined',
+    });
+
+    activeCalls.delete(callId);
+  });
+
+  socket.on('call:reject', (payload = {}) => {
+    const { callId, userId, reason } = payload;
+
+    if (!callId || !activeCalls.has(callId)) return;
+
+    const call = activeCalls.get(callId);
+    const rejectedBy = userId || socket.data.userId || call.receiverId;
+
+    sendToUser(call.callerId, 'call:declined', {
+      callId,
+      roomId: call.roomId,
+      declinedBy: rejectedBy,
+      reason: reason || 'rejected',
+    });
+
+    sendToUser(call.receiverId, 'call:declined', {
+      callId,
+      roomId: call.roomId,
+      declinedBy: rejectedBy,
+      reason: reason || 'rejected',
+    });
+
+    activeCalls.delete(callId);
+  });
+
+  socket.on('call:cancel', (payload = {}) => {
+    const { callId, userId } = payload;
+
+    if (!callId || !activeCalls.has(callId)) return;
+
+    const call = activeCalls.get(callId);
+    const cancelledBy = userId || socket.data.userId || call.callerId;
+
+    sendToUser(call.receiverId, 'call:cancelled', {
+      callId,
+      roomId: call.roomId,
+      cancelledBy,
+    });
+
+    sendToUser(call.callerId, 'call:cancelled', {
+      callId,
+      roomId: call.roomId,
+      cancelledBy,
+    });
+
+    activeCalls.delete(callId);
+  });
+
+  socket.on('call:join', ({ roomId, callId, userId } = {}) => {
+    const finalRoomId = getCallRoom({ roomId, callId });
+
+    if (!finalRoomId) return;
+
+    const id = String(userId || socket.data.userId || '').trim();
+
+    if (id) {
+      socket.data.userId = id;
+      socket.join(`user:${id}`);
+      addUserSocket(id, socket.id);
+    }
+
+    socket.join(finalRoomId);
+
+    socket.to(finalRoomId).emit('call:joined', {
+      callId: callId || null,
+      roomId: finalRoomId,
+      userId: id || null,
+      socketId: socket.id,
+    });
+  });
+
+  socket.on('call:offer', (payload = {}) => {
+    const roomId = getCallRoom(payload);
+    const { offer, fromUserId } = payload;
+
+    if (!roomId || !offer) return;
+
+    socket.to(roomId).emit('call:offer', {
+      callId: payload.callId || null,
+      roomId,
+      offer,
+      fromUserId: fromUserId || socket.data.userId || null,
+      from: socket.id,
+    });
+  });
+
+  socket.on('call:answer', (payload = {}) => {
+    const roomId = getCallRoom(payload);
+    const { answer, fromUserId } = payload;
+
+    if (!roomId || !answer) return;
+
+    socket.to(roomId).emit('call:answer', {
+      callId: payload.callId || null,
+      roomId,
+      answer,
+      fromUserId: fromUserId || socket.data.userId || null,
+      from: socket.id,
+    });
+  });
+
+  socket.on('call:candidate', (payload = {}) => {
+    const roomId = getCallRoom(payload);
+    const { candidate, fromUserId } = payload;
+
+    if (!roomId || !candidate) return;
+
+    socket.to(roomId).emit('call:candidate', {
+      callId: payload.callId || null,
+      roomId,
+      candidate,
+      fromUserId: fromUserId || socket.data.userId || null,
+      from: socket.id,
+    });
+  });
+
+  socket.on('call:ice-candidate', (payload = {}) => {
+    const roomId = getCallRoom(payload);
+    const { candidate, fromUserId } = payload;
+
+    if (!roomId || !candidate) return;
+
+    socket.to(roomId).emit('call:candidate', {
+      callId: payload.callId || null,
+      roomId,
+      candidate,
+      fromUserId: fromUserId || socket.data.userId || null,
+      from: socket.id,
+    });
+  });
+
+  socket.on('call:media-toggle', (payload = {}) => {
+    const roomId = getCallRoom(payload);
+
     if (!roomId) return;
-    socket.to(roomId).emit('call:end', { from: from || socket.id });
+
+    socket.to(roomId).emit('call:media-toggle', {
+      callId: payload.callId || null,
+      roomId,
+      userId: payload.userId || socket.data.userId || null,
+      audioEnabled: payload.audioEnabled,
+      videoEnabled: payload.videoEnabled,
+    });
   });
 
-  socket.on('story:join', ({ code, userId }) => {
+  /*
+    LIVE TRANSLATION FOR CALLS
+
+    Frontend flow:
+    1. Browser listens to speech and converts voice to text.
+    2. Frontend sends that text here using call:translate.
+    3. Backend translates using Azure.
+    4. Backend sends translated subtitle back into the call room.
+  */
+
+  socket.on('call:translation-toggle', (payload = {}) => {
+    const roomId = getCallRoom(payload);
+
+    if (!roomId) return;
+
+    socket.to(roomId).emit('call:translation-toggle', {
+      callId: payload.callId || null,
+      roomId,
+      userId: payload.userId || socket.data.userId || null,
+      enabled: !!payload.enabled,
+      language: payload.language || 'en',
+    });
+  });
+
+  socket.on('call:translate', async (payload = {}) => {
+    const roomId = getCallRoom(payload);
+
+    if (!roomId) {
+      socket.emit('call:translation-error', {
+        message: 'Missing call room.',
+      });
+      return;
+    }
+
+    try {
+      const result = await translateText({
+        text: payload.text,
+        to: payload.to || 'en',
+        from: payload.from || undefined,
+      });
+
+      const translationPayload = {
+        callId: payload.callId || null,
+        roomId,
+        fromUserId: payload.fromUserId || socket.data.userId || null,
+        originalText: result.originalText,
+        translatedText: result.translatedText,
+        detectedLanguage: result.detectedLanguage,
+        to: result.to,
+        createdAt: new Date().toISOString(),
+      };
+
+      io.to(roomId).emit('call:translation', translationPayload);
+    } catch (error) {
+      socket.emit('call:translation-error', {
+        callId: payload.callId || null,
+        roomId,
+        message: error.message || 'Translation failed',
+      });
+    }
+  });
+
+  socket.on('call:end', (payload = {}) => {
+    const roomId = getCallRoom(payload);
+    const { callId, fromUserId } = payload;
+
+    if (!roomId) return;
+
+    io.to(roomId).emit('call:end', {
+      callId: callId || null,
+      roomId,
+      fromUserId: fromUserId || socket.data.userId || null,
+      from: socket.id,
+    });
+
+    if (callId) {
+      activeCalls.delete(callId);
+    }
+
+    try {
+      socket.leave(roomId);
+    } catch {}
+  });
+
+  /*
+    COLLAB STORY SOCKETS
+  */
+
+  socket.on('story:join', ({ code, userId } = {}) => {
     if (!code) return;
+
     socket.join(code);
-    socket.to(code).emit('story:joined', { userId, socketId: socket.id });
+
+    socket.to(code).emit('story:joined', {
+      userId,
+      socketId: socket.id,
+    });
   });
 
-  socket.on('story:add-step', ({ code, text, userId }) => {
+  socket.on('story:add-step', ({ code, text, userId } = {}) => {
     if (!code || !text) return;
+
     socket.to(code).emit('story:step', {
       text,
       userId: userId || null,
@@ -283,7 +786,11 @@ io.on('connection', (socket) => {
     });
   });
 
-  socket.on('world:join', ({ worldId, user }) => {
+  /*
+    WORLD PRESENCE SOCKETS
+  */
+
+  socket.on('world:join', ({ worldId, user } = {}) => {
     if (!worldId) return;
 
     socket.join(`world:${worldId}`);
@@ -295,6 +802,7 @@ io.on('connection', (socket) => {
     }
 
     const map = worldPresence.get(worldId);
+
     const existing = map.get(u.id) || {
       user: u,
       avatar: null,
@@ -323,7 +831,7 @@ io.on('connection', (socket) => {
     });
   });
 
-  socket.on('world:leave', ({ worldId, user }) => {
+  socket.on('world:leave', ({ worldId, user } = {}) => {
     if (!worldId) return;
 
     try {
@@ -356,7 +864,7 @@ io.on('connection', (socket) => {
     });
   });
 
-  socket.on('world:avatar:update', ({ worldId, userId, avatar }) => {
+  socket.on('world:avatar:update', ({ worldId, userId, avatar } = {}) => {
     if (!worldId || !userId) return;
 
     const map = worldPresence.get(worldId);
@@ -380,6 +888,30 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
+    const userId = socket.data.userId;
+
+    if (userId) {
+      removeUserSocket(String(userId), socket.id);
+    }
+
+    for (const [callId, call] of activeCalls.entries()) {
+      const callerOffline =
+        call.callerId && !userSockets.has(String(call.callerId));
+
+      const receiverOffline =
+        call.receiverId && !userSockets.has(String(call.receiverId));
+
+      if (callerOffline || receiverOffline) {
+        io.to(call.roomId).emit('call:end', {
+          callId,
+          roomId: call.roomId,
+          reason: 'peer-disconnected',
+        });
+
+        cleanupCall(callId, 'peer-disconnected');
+      }
+    }
+
     for (const [worldId, map] of worldPresence.entries()) {
       for (const [uid, entry] of map.entries()) {
         if (entry.socketIds.has(socket.id)) {
