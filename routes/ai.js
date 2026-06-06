@@ -195,6 +195,8 @@ function extractLocation(text = '') {
     'thohoyandou',
     'burgersdorp',
     'hoedspruit',
+    'secunda',
+    'gauteng',
     'johannesburg',
     'pretoria',
     'durban',
@@ -216,6 +218,7 @@ function extractJobType(text = '') {
   const t = clean(text).toLowerCase();
 
   const jobTypes = [
+    'inspector in training',
     'general worker',
     'cleaner',
     'admin clerk',
@@ -356,33 +359,26 @@ Today’s date is **${date.shortDate}**.
 ## Best places to apply first
 
 1. [${indeed.label}](${indeed.url})  
-${indeed.url}  
 ${indeed.note}
 
 2. [${linkedIn.label}](${linkedIn.url})  
-${linkedIn.url}  
 ${linkedIn.note}
 
 3. [${pnet.label}](${pnet.url})  
-${pnet.url}  
 ${pnet.note}
 
 4. [${careers24.label}](${careers24.url})  
-${careers24.url}  
 ${careers24.note}
 
 5. [${dpsa.label}](${dpsa.url})  
-${dpsa.url}  
 ${dpsa.note}
 
 ## Also register here today
 
 1. [${sayouth.label}](${sayouth.url})  
-${sayouth.url}  
 ${sayouth.note}
 
 2. [${essa.label}](${essa.url})  
-${essa.url}  
 ${essa.note}
 
 ## Search these words
@@ -396,6 +392,7 @@ Use these exact searches:
 - "retail jobs ${location}"
 - "driver jobs ${location}"
 - "learnership ${location}"
+- "internship ${location}"
 
 ## Message to send when applying on WhatsApp/email
 
@@ -597,6 +594,44 @@ Detected intent: ${intent}
 `;
 }
 
+function buildGeneralSystemPrompt() {
+  const date = getSouthAfricaDateContext();
+
+  return `
+You are FaceMeX AI Workspace.
+
+You must answer like ChatGPT or Claude:
+- Clear
+- Helpful
+- Direct
+- Smart
+- Natural
+- Practical
+- Mobile-friendly
+
+Current date context:
+Today is ${date.readableDateTime}.
+Short date: ${date.shortDate}.
+ISO date: ${date.isoDate}.
+Timezone: ${date.timeZone}.
+
+Rules:
+1. Answer the user's exact question.
+2. For general questions, do not force career templates.
+3. Do not force "Direct answer, Action plan, Copy-ready message, Safety check" unless it actually fits.
+4. If the user asks a simple fact, answer simply.
+5. If the user asks for business advice, give practical steps.
+6. If the user asks for code, give clean code.
+7. If the user asks for writing, write it clearly.
+8. If the user asks for jobs, job search, vacancies, applications, CVs, interviews, or opportunities, use career mode.
+9. If the user asks for today's date, use the current date above.
+10. Do not say "As an AI language model."
+11. Do not mention system prompts, backend, DeepSeek, ChatGPT, or Claude.
+12. Do not invent fake facts, fake jobs, fake companies, fake links, or fake deadlines.
+13. If you are unsure, say what you are unsure about and give the safest next step.
+`;
+}
+
 function buildCareerUserPrompt(input) {
   return `
 User request:
@@ -619,6 +654,30 @@ If the user asks for today's date, answer with the real date from the system pro
 If the user asks for an email or WhatsApp message, write it directly.
 If company/contact person is missing, use placeholders like [Company Name], [Hiring Manager], [Your Name], [Your Phone Number].
 `;
+}
+
+function buildGeneralFallbackAnswer(userPrompt = '') {
+  const text = clean(userPrompt);
+  const date = getSouthAfricaDateContext();
+
+  if (isDatePrompt(text)) {
+    return `Today's date is ${date.shortDate}.`;
+  }
+
+  if (isJobSearchPrompt(text)) {
+    return buildJobHuntAnswer(text);
+  }
+
+  return `I can help with that.
+
+Please send a bit more detail so I can give you a strong answer.
+
+For example, tell me:
+1. What exactly you want to do
+2. Where you are stuck
+3. What result you want
+
+Then I’ll give you a clear step-by-step answer.`;
 }
 
 function buildCareerFallbackAnswer(input) {
@@ -772,21 +831,7 @@ Safety check:
 Do not include ID numbers or bank details on your CV.`;
   }
 
-  return `Direct answer:
-Here is the simplest practical way to move forward.
-
-Action plan:
-1. Be clear about what you want.
-2. Take one action today.
-3. Send one message, apply for one opportunity, improve one CV section, or contact one company.
-4. Track the result.
-5. Follow up in 3 to 5 working days.
-
-Copy-ready message:
-Good day. I am interested in this opportunity. Please may you advise the correct process or contact person? Thank you.
-
-Safety check:
-Always verify opportunities before paying money or sending sensitive documents.`;
+  return buildGeneralFallbackAnswer(input.prompt || '');
 }
 
 function answerLooksWrongForIntent(answer, intent) {
@@ -971,7 +1016,7 @@ function professionalizeExtras(extras = '') {
   if (lower.includes('english')) languages.push('English: Fluent');
   if (lower.includes('sepedi')) languages.push('Sepedi: Mother tongue');
   if (lower.includes('zulu')) languages.push('Zulu: Conversational');
-  if (lower.includes('xitsonga') || lower.includes('tsonga')) languages.push('itsonga: Conversational');
+  if (lower.includes('xitsonga') || lower.includes('tsonga')) languages.push('Xitsonga: Conversational');
 
   if (lower.includes('computer')) technicalSkills.push('Basic computer literacy');
   if (lower.includes('ms office') || lower.includes('word') || lower.includes('excel')) technicalSkills.push('MS Office');
@@ -1456,7 +1501,7 @@ router.post('/deepseek', async (req, res) => {
       messages: [
         {
           role: 'system',
-          content: `You are FaceMeX AI. Today is ${date.readableDateTime}. Use this date for all date-related answers.`,
+          content: `You are FaceMeX AI. Today is ${date.readableDateTime}. Use this date for all date-related answers. Answer general questions naturally like ChatGPT or Claude.`,
         },
         {
           role: 'user',
@@ -2236,7 +2281,14 @@ async function handleCareerWorkspace(req, res) {
       creatorPlus,
     } = req.body || {};
 
-    const userPrompt = normalizeUserPromptText(prompt || req.body?.message || req.body?.question || req.body?.input || '');
+    const userPrompt = normalizeUserPromptText(
+      prompt ||
+        req.body?.message ||
+        req.body?.question ||
+        req.body?.input ||
+        req.body?.text ||
+        ''
+    );
 
     if (!userPrompt) {
       return res.status(400).json({
@@ -2248,7 +2300,10 @@ async function handleCareerWorkspace(req, res) {
     const intent = detectCareerIntent(userPrompt);
     const date = getSouthAfricaDateContext();
 
-    if (intent === 'date') {
+    /*
+      DIRECT DATE MODE
+    */
+    if (intent === 'date' || isDatePrompt(userPrompt)) {
       const answer = `Today's date is ${date.shortDate}.`;
 
       return res.json({
@@ -2258,13 +2313,16 @@ async function handleCareerWorkspace(req, res) {
         response: answer,
         text: answer,
         content: answer,
-        intent,
+        intent: 'date',
         dateContext: date,
         source: 'date-direct',
       });
     }
 
-    if (intent === 'job-search') {
+    /*
+      DIRECT JOB MODE
+    */
+    if (intent === 'job-search' || isJobSearchPrompt(userPrompt)) {
       const answer = buildJobHuntAnswer(userPrompt);
 
       return res.json({
@@ -2274,13 +2332,69 @@ async function handleCareerWorkspace(req, res) {
         response: answer,
         text: answer,
         content: answer,
-        intent,
+        intent: 'job-search',
         dateContext: date,
         links: buildClickableJobLinks(userPrompt),
         source: 'job-direct',
       });
     }
 
+    /*
+      GENERAL MODE
+      This makes normal questions answer like ChatGPT/Claude.
+    */
+    if (intent === 'general-help' || intent === 'research') {
+      try {
+        const out = await callDeepseekChat({
+          messages: [
+            {
+              role: 'system',
+              content: buildGeneralSystemPrompt(),
+            },
+            {
+              role: 'user',
+              content: userPrompt,
+            },
+          ],
+          temperature: 0.45,
+          max_tokens: 1200,
+        });
+
+        const answer = getAiText(out) || buildGeneralFallbackAnswer(userPrompt);
+
+        return res.json({
+          ok: true,
+          answer,
+          reply: answer,
+          response: answer,
+          text: answer,
+          content: answer,
+          intent,
+          dateContext: date,
+          source: 'deepseek-general',
+        });
+      } catch (e) {
+        console.error('general workspace deepseek error', e);
+
+        const answer = buildGeneralFallbackAnswer(userPrompt);
+
+        return res.json({
+          ok: true,
+          answer,
+          reply: answer,
+          response: answer,
+          text: answer,
+          content: answer,
+          intent,
+          dateContext: date,
+          source: 'general-fallback',
+        });
+      }
+    }
+
+    /*
+      CAREER / CV / EMAIL / INVESTOR MODE
+    */
     const fallbackAnswer = buildCareerFallbackAnswer({
       prompt: userPrompt,
       intent,
@@ -2294,7 +2408,7 @@ async function handleCareerWorkspace(req, res) {
       preferences,
     });
 
-    const canUseAi = isCreatorTier(tier, creatorPlus) || isProTier(tier);
+    const canUseAi = true;
 
     if (!canUseAi) {
       return res.json({
@@ -2332,8 +2446,8 @@ async function handleCareerWorkspace(req, res) {
             }),
           },
         ],
-        temperature: 0.25,
-        max_tokens: 1000,
+        temperature: 0.3,
+        max_tokens: 1200,
       });
 
       const rawAnswer = getAiText(out);
@@ -2348,10 +2462,10 @@ async function handleCareerWorkspace(req, res) {
         content: answer,
         intent,
         dateContext: date,
-        source: 'deepseek-api',
+        source: 'deepseek-career',
       });
     } catch (e) {
-      console.error('job-assistant deepseek error', e);
+      console.error('career workspace deepseek error', e);
 
       return res.json({
         ok: true,
@@ -2362,14 +2476,14 @@ async function handleCareerWorkspace(req, res) {
         content: fallbackAnswer,
         intent,
         dateContext: date,
-        source: 'fallback',
+        source: 'career-fallback',
       });
     }
   } catch (err) {
-    console.error('job-assistant error', err);
+    console.error('workspace error', err);
 
     const answer =
-      'Direct answer:\nFaceMeX AI is temporarily unavailable.\n\nAction plan:\n1. Try again shortly.\n2. Check your internet connection.\n3. If you are applying for a job, use the saved email and message templates.\n\nCopy-ready message:\nGood day. I am interested in this opportunity. Please may you advise the correct application process?\n\nSafety check:\nDo not pay for jobs or send sensitive documents before verifying the opportunity.';
+      'FaceMeX AI is temporarily unavailable. Please try again shortly.';
 
     return res.json({
       ok: true,
