@@ -143,22 +143,8 @@ function cleanupCall(callId, reason = 'ended') {
 }
 
 /*
-  FACEMEX AI RUNTIME CONTEXT
-
-  This middleware gives FaceMeX AI:
-  - today's real South African date
-  - FaceMeX product knowledge
-  - general question ability
-  - career/workspace support
-  - job safety rules
-  - post/feed scam-check rules
-  - strict misuse prevention
-
-  Important:
-  To analyze a specific post, frontend should send one of these fields:
-  postText, selectedPost, linkedPost, currentPost, feedPost, postContext, feedContext
+  DATE CONTEXT
 */
-
 function getSouthAfricaDateContext() {
   const now = new Date();
   const timeZone = 'Africa/Johannesburg';
@@ -197,18 +183,13 @@ function getSouthAfricaDateContext() {
   };
 }
 
-function cleanText(value) {
-  return String(value || '').trim();
-}
-
+/*
+  AI RUNTIME CONTEXT
+*/
 function extractUserTextFromBody(body = {}) {
   if (!body || typeof body !== 'object') return '';
 
   const direct =
-    body.originalMessage ||
-    body.originalPrompt ||
-    body.originalQuestion ||
-    body.originalInput ||
     body.message ||
     body.prompt ||
     body.question ||
@@ -218,14 +199,7 @@ function extractUserTextFromBody(body = {}) {
     '';
 
   if (typeof direct === 'string' && direct.trim()) {
-    const raw = direct.trim();
-
-    if (raw.includes('USER QUESTION:')) {
-      const parts = raw.split('USER QUESTION:');
-      return cleanText(parts[parts.length - 1]);
-    }
-
-    return raw;
+    return direct.trim();
   }
 
   if (Array.isArray(body.messages)) {
@@ -234,7 +208,7 @@ function extractUserTextFromBody(body = {}) {
       .find((msg) => msg?.role === 'user' && typeof msg?.content === 'string');
 
     if (lastUserMessage?.content) {
-      return cleanText(lastUserMessage.content);
+      return lastUserMessage.content.trim();
     }
   }
 
@@ -257,7 +231,7 @@ function extractPostContextFromBody(body = {}) {
     '';
 
   if (typeof possible === 'string') {
-    return cleanText(possible);
+    return possible.trim();
   }
 
   if (possible && typeof possible === 'object') {
@@ -278,7 +252,7 @@ function extractPostContextFromBody(body = {}) {
       .filter(Boolean)
       .map((item) => String(item));
 
-    return cleanText(parts.join('\n'));
+    return parts.join('\n').trim();
   }
 
   if (Array.isArray(body.feedContext)) {
@@ -299,20 +273,6 @@ Date: ${post?.createdAt || ''}`;
   return '';
 }
 
-function isDatePrompt(text = '') {
-  const t = cleanText(text).toLowerCase();
-
-  return (
-    t === 'date' ||
-    t === 'today' ||
-    t === 'what is today' ||
-    t === 'what is today?' ||
-    t === "what is today's date" ||
-    t === "what is today's date?" ||
-    /\b(today'?s date|today date|current date|date today|what date is it|what is the date|what's the date)\b/i.test(t)
-  );
-}
-
 function isJobPrompt(text = '') {
   const t = String(text || '').toLowerCase();
 
@@ -322,7 +282,7 @@ function isJobPrompt(text = '') {
 function isPostSafetyPrompt(text = '') {
   const t = String(text || '').toLowerCase();
 
-  return /\b(is this legit|is it legit|legit|scam|fake|real or fake|verify|safe|risky|should i apply|can i trust|check this post|this post|job post|apply link|whatsapp job|telegram job|facebook job|comments below|inbox|dm me|pay|fee|registration fee|training fee)\b/i.test(t);
+  return /\b(is this legit|is it legit|legit|scam|fake|real or fake|verify|safe|risky|should i apply|can i trust|check this post|this post|job post|apply link|whatsapp job|telegram job|facebook job|comments below|link in comments|dm me|inbox me|pay|fee|registration fee|training fee|admin fee|processing fee|uniform fee)\b/i.test(t);
 }
 
 function isMisusePrompt(text = '') {
@@ -543,8 +503,8 @@ How to judge a post:
 
 function buildWorkspaceSystemContext(userText = '', postContext = '') {
   const date = getSouthAfricaDateContext();
-  const location = extractLocation(userText + '\n' + postContext);
-  const jobType = extractJobType(userText + '\n' + postContext);
+  const location = extractLocation(`${userText}\n${postContext}`);
+  const jobType = extractJobType(`${userText}\n${postContext}`);
   const jobPrompt = isJobPrompt(userText);
   const postSafetyPrompt = isPostSafetyPrompt(userText) || !!postContext;
   const misusePrompt = isMisusePrompt(userText);
@@ -599,29 +559,6 @@ CORE RULES:
 14. Use simple English.
 15. Use markdown links when links are provided.
 16. Keep answers readable on mobile.
-
-WHEN USER ASKS ABOUT A POST:
-Use this structure:
-- Quick verdict
-- Why it looks safe or risky
-- What to check before applying
-- Safe message to send
-- Final advice
-
-WHEN USER ASKS FOR JOBS:
-Use this structure:
-- Direct answer
-- Best places to apply first
-- Search words to use
-- Message to send when applying
-- Today's action plan
-- Important warning
-
-SAFE JOB MESSAGE:
-Good day, my name is [Your Name]. I am interested in this opportunity. Please may you confirm the official company name, job title, location, job description, and the official application link or email address? Thank you.
-
-FOR GENERAL QUESTIONS:
-Answer naturally and directly. Give steps only when steps are useful.
 `.trim();
 }
 
@@ -715,6 +652,9 @@ async function facemexAiRuntimeMiddleware(req, _res, next) {
   }
 }
 
+/*
+  TRANSLATION HELPER
+*/
 async function translateText({ text, to = 'en', from }) {
   const cleanTextValue = String(text || '').trim();
 
@@ -774,6 +714,9 @@ async function translateText({ text, to = 'en', from }) {
   };
 }
 
+/*
+  GLOBAL MIDDLEWARE
+*/
 app.use(helmet());
 app.use(morgan('dev'));
 app.use(cookieParser());
@@ -790,6 +733,7 @@ app.use(
 
 /*
   STRIPE WEBHOOK
+  Must stay before express.json()
 */
 if (process.env.STRIPE_SECRET_KEY) {
   const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
@@ -836,6 +780,7 @@ if (process.env.STRIPE_SECRET_KEY) {
 
 /*
   YOCO WEBHOOK
+  Must stay before express.json()
 */
 app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
 
@@ -845,17 +790,31 @@ app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
+/*
+  HEALTH + PING ROUTES
+*/
 app.get('/', (_req, res) => {
   res
     .type('text/plain')
-    .send('FaceMe API is running. See /health and /api/* endpoints.');
+    .send('FaceMe API is running. See /health, /api/ping and /api/* endpoints.');
+});
+
+app.get('/api/ping', (_req, res) => {
+  res.status(200).json({
+    ok: true,
+    service: 'FaceMeX backend',
+    status: 'online',
+    time: new Date().toISOString(),
+  });
 });
 
 app.get('/health', (_req, res) => {
-  res.json({
+  res.status(200).json({
     ok: true,
     service: 'faceme-api',
     env: process.env.NODE_ENV || 'dev',
+    status: 'online',
+    time: new Date().toISOString(),
     dateContext: getSouthAfricaDateContext(),
   });
 });
@@ -900,6 +859,9 @@ app.get('/api/health', async (_req, res) => {
 
   res.json({
     ok: true,
+    service: 'faceme-api',
+    status: 'online',
+    time: new Date().toISOString(),
     dateContext: getSouthAfricaDateContext(),
     mongo: {
       configured: !!process.env.MONGODB_URI,
@@ -992,9 +954,6 @@ app.use('/api/reactions', reactionsRouter);
 app.use('/api/billing', billingRouter);
 app.use('/api/payments', paymentsRouter);
 
-/*
-  AI route gets FaceMeX runtime context.
-*/
 app.use('/api/ai', facemexAiRuntimeMiddleware, aiRouter);
 
 app.use('/api/business', businessRouter);
