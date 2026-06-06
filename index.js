@@ -143,13 +143,17 @@ function cleanupCall(callId, reason = 'ended') {
 }
 
 /*
-  FACEMEX AI RUNTIME CONTEXT
-  Makes Workspace know:
-  - real South African date/time
-  - job-search intent
-  - location like Tzaneen / Limpopo / Polokwane
-  - live search results if Brave/Bing key exists
-  - safe verified job-board links if no live search key exists
+  FACEMEX WORKSPACE AI CONTEXT
+  No external search API needed.
+
+  This makes FaceMeX Workspace:
+  - know today's real South African date
+  - reply in a ChatGPT-style format
+  - answer job prompts like a real job hunt
+  - provide clickable markdown links
+  - give WhatsApp/email scripts
+  - give action plans
+  - avoid fake job claims
 */
 
 function getSouthAfricaDateContext() {
@@ -184,21 +188,9 @@ function getSouthAfricaDateContext() {
   return {
     nowIso: now.toISOString(),
     timeZone,
+    readableDateTime,
     shortDate,
     isoDate,
-    readableDateTime,
-    instruction: `
-CURRENT DATE CONTEXT:
-Today is ${readableDateTime}.
-Short date: ${shortDate}.
-ISO date: ${isoDate}.
-The user is in South Africa. Use timezone: Africa/Johannesburg.
-
-DATE RULES:
-- If the user asks for today's date, current date, current year, tomorrow, yesterday, deadlines, interviews, or application timing, use the date above.
-- Never guess the current date.
-- Never use old model-memory dates.
-`.trim(),
   };
 }
 
@@ -214,32 +206,30 @@ function extractUserTextFromBody(body = {}) {
     body.query ||
     '';
 
-  if (typeof direct === 'string' && direct.trim()) return direct.trim();
+  if (typeof direct === 'string' && direct.trim()) {
+    return direct.trim();
+  }
 
   if (Array.isArray(body.messages)) {
     const lastUserMessage = [...body.messages]
       .reverse()
       .find((msg) => msg?.role === 'user' && typeof msg?.content === 'string');
 
-    if (lastUserMessage?.content) return lastUserMessage.content.trim();
+    if (lastUserMessage?.content) {
+      return lastUserMessage.content.trim();
+    }
   }
 
   return '';
 }
 
-function shouldAttachLiveResearch(text = '') {
+function isJobPrompt(text = '') {
   const t = String(text || '').toLowerCase();
 
-  return /\b(job|jobs|hiring|hire|vacancy|vacancies|career|careers|apply|application|learnership|internship|graduate programme|bursary|company|companies|deadline|salary|interview|cv|cover letter|opportunity|opportunities|funding|grant|tender|limpopo|tzaneen|polokwane|giyani|phalaborwa|mokopane|thohoyandou|mankweng|modjadjiskloof|lenyenye|nkowankowa)\b/.test(t);
+  return /\b(job|jobs|work|hiring|vacancy|vacancies|career|careers|apply|application|learnership|internship|graduate|interview|cv|cover letter|employment|opportunity|opportunities|looking for a job|looking for work|find me a job|available job|available jobs)\b/.test(t);
 }
 
-function isJobSearchPrompt(text = '') {
-  const t = String(text || '').toLowerCase();
-
-  return /\b(looking for job|looking for work|find me job|find jobs|available jobs|jobs around|jobs in|vacancies around|vacancies in|hiring around|hiring in|apply for jobs|need a job|job near me|work around|work in|internship|learnership)\b/.test(t);
-}
-
-function extractJobLocation(text = '') {
+function extractLocation(text = '') {
   const t = String(text || '').toLowerCase();
 
   const locations = [
@@ -248,6 +238,8 @@ function extractJobLocation(text = '') {
     'polokwane',
     'lenyenye',
     'nkowankowa',
+    'maake plaza',
+    'maake',
     'giyani',
     'phalaborwa',
     'modjadjiskloof',
@@ -255,8 +247,7 @@ function extractJobLocation(text = '') {
     'mokopane',
     'thohoyandou',
     'burgersdorp',
-    'maake',
-    'maake plaza',
+    'hoedspruit',
     'johannesburg',
     'pretoria',
     'durban',
@@ -266,14 +257,12 @@ function extractJobLocation(text = '') {
 
   const found = locations.find((loc) => t.includes(loc));
 
-  if (found) {
-    return found
-      .split(' ')
-      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-      .join(' ');
-  }
+  if (!found) return 'South Africa';
 
-  return 'South Africa';
+  return found
+    .split(' ')
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
 }
 
 function extractJobType(text = '') {
@@ -282,8 +271,10 @@ function extractJobType(text = '') {
   const jobTypes = [
     'general worker',
     'cleaner',
+    'admin clerk',
     'admin',
     'administrative',
+    'clerk',
     'driver',
     'cashier',
     'security',
@@ -298,363 +289,201 @@ function extractJobType(text = '') {
     'internship',
     'graduate',
     'warehouse',
-    'pick n pay',
-    'shoprite',
-    'boxer',
-    'spar',
+    'store assistant',
     'teacher assistant',
     'nurse',
     'clinic',
     'municipality',
     'government',
+    'restaurant',
+    'griller',
+    'packer',
+    'merchandiser',
   ];
 
   const found = jobTypes.find((job) => t.includes(job));
-
-  if (found) return found;
-
-  return 'jobs';
+  return found || 'jobs';
 }
 
-function buildJobSearchQueries(userText = '') {
-  const location = extractJobLocation(userText);
-  const jobType = extractJobType(userText);
+function makeSearchUrl(base, params) {
+  const url = new URL(base);
 
-  const cleanUserText = String(userText || '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 140);
-
-  const baseQuery =
-    cleanUserText ||
-    `${jobType} ${location}`;
-
-  return [
-    `${jobType} ${location} jobs apply official South Africa`,
-    `${jobType} vacancies ${location} South Africa apply`,
-    `${baseQuery} site:careers24.com OR site:pnet.co.za OR site:linkedin.com/jobs OR site:za.indeed.com`,
-    `${location} latest jobs vacancies apply`,
-  ];
-}
-
-function buildVerifiedJobLinks(userText = '') {
-  const location = extractJobLocation(userText);
-  const jobType = extractJobType(userText);
-
-  const q = encodeURIComponent(
-    `${jobType} ${location}`
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, 140)
-  );
-
-  const locationEncoded = encodeURIComponent(location);
-
-  return [
-    {
-      title: `LinkedIn Jobs - ${jobType} in ${location}`,
-      url: `https://www.linkedin.com/jobs/search/?keywords=${q}&location=${locationEncoded}`,
-      sourceType: 'job-board',
-      verification: 'Large job platform. Users must still verify company details before applying.',
-    },
-    {
-      title: `Indeed South Africa - ${jobType} in ${location}`,
-      url: `https://za.indeed.com/jobs?q=${q}&l=${locationEncoded}`,
-      sourceType: 'job-board',
-      verification: 'Large job platform. Check company name, closing date, and official details.',
-    },
-    {
-      title: `PNet South Africa`,
-      url: `https://www.pnet.co.za/jobs`,
-      sourceType: 'job-board',
-      verification: 'South African job platform. Search the job title and location inside the site.',
-    },
-    {
-      title: `Careers24`,
-      url: `https://www.careers24.com/jobs/`,
-      sourceType: 'job-board',
-      verification: 'South African job platform. Search the job title and location inside the site.',
-    },
-    {
-      title: `CareerJunction`,
-      url: `https://www.careerjunction.co.za/jobs`,
-      sourceType: 'job-board',
-      verification: 'South African job platform. Search the job title and location inside the site.',
-    },
-    {
-      title: `DPSA Public Service Vacancy Circular`,
-      url: `https://www.dpsa.gov.za/newsroom/psvc/`,
-      sourceType: 'official-government',
-      verification: 'Official South African government vacancy circulars.',
-    },
-    {
-      title: `SAYouth Opportunities`,
-      url: `https://sayouth.mobi/`,
-      sourceType: 'youth-opportunities',
-      verification: 'Common South African youth opportunity platform. Users must confirm details before applying.',
-    },
-  ];
-}
-
-function classifySource(url = '') {
-  const u = String(url || '').toLowerCase();
-
-  if (!u.startsWith('http')) return 'unknown';
-
-  if (
-    u.includes('dpsa.gov.za') ||
-    u.includes('.gov.za') ||
-    u.includes('sayouth.mobi')
-  ) {
-    return 'official/public-sector';
-  }
-
-  if (
-    u.includes('linkedin.com/jobs') ||
-    u.includes('pnet.co.za') ||
-    u.includes('careers24.com') ||
-    u.includes('careerjunction.co.za') ||
-    u.includes('za.indeed.com') ||
-    u.includes('indeed.com') ||
-    u.includes('bizcommunity.com') ||
-    u.includes('jobmail.co.za')
-  ) {
-    return 'known-job-board';
-  }
-
-  if (
-    u.includes('/careers') ||
-    u.includes('/career') ||
-    u.includes('/jobs') ||
-    u.includes('/vacancies') ||
-    u.includes('/recruitment')
-  ) {
-    return 'company-careers-page';
-  }
-
-  return 'web-result-check-before-applying';
-}
-
-function cleanSearchResults(results = []) {
-  const seen = new Set();
-
-  return results
-    .filter((item) => item && item.url && item.title)
-    .map((item) => {
-      const url = String(item.url || '').trim();
-
-      return {
-        title: String(item.title || '').trim(),
-        url,
-        description: String(item.description || '').trim(),
-        sourceType: classifySource(url),
-      };
-    })
-    .filter((item) => {
-      if (!item.url.startsWith('http')) return false;
-      if (seen.has(item.url)) return false;
-      seen.add(item.url);
-      return true;
-    })
-    .slice(0, 10);
-}
-
-async function fetchWithTimeout(url, options = {}, timeoutMs = 7000) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const response = await fetch(url, {
-      ...options,
-      signal: controller.signal,
-    });
-
-    return response;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function searchWithBrave(query) {
-  const key = process.env.BRAVE_SEARCH_API_KEY;
-  if (!key) return [];
-
-  const url = new URL('https://api.search.brave.com/res/v1/web/search');
-  url.searchParams.set('q', query);
-  url.searchParams.set('count', '8');
-  url.searchParams.set('country', 'ZA');
-  url.searchParams.set('search_lang', 'en');
-  url.searchParams.set('safesearch', 'moderate');
-
-  const response = await fetchWithTimeout(url.toString(), {
-    method: 'GET',
-    headers: {
-      Accept: 'application/json',
-      'X-Subscription-Token': key,
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Brave search failed: ${response.status}`);
-  }
-
-  const data = await response.json();
-
-  return cleanSearchResults(
-    (data?.web?.results || []).map((item) => ({
-      title: item.title,
-      url: item.url,
-      description: item.description,
-    }))
-  );
-}
-
-async function searchWithBing(query) {
-  const key = process.env.BING_SEARCH_API_KEY;
-  if (!key) return [];
-
-  const endpoint =
-    process.env.BING_SEARCH_ENDPOINT ||
-    'https://api.bing.microsoft.com/v7.0/search';
-
-  const url = new URL(endpoint);
-  url.searchParams.set('q', query);
-  url.searchParams.set('mkt', 'en-ZA');
-  url.searchParams.set('count', '8');
-  url.searchParams.set('safeSearch', 'Moderate');
-
-  const response = await fetchWithTimeout(url.toString(), {
-    method: 'GET',
-    headers: {
-      'Ocp-Apim-Subscription-Key': key,
-      Accept: 'application/json',
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Bing search failed: ${response.status}`);
-  }
-
-  const data = await response.json();
-
-  return cleanSearchResults(
-    (data?.webPages?.value || []).map((item) => ({
-      title: item.name,
-      url: item.url,
-      description: item.snippet,
-    }))
-  );
-}
-
-async function searchInternetForAI(userText = '') {
-  const cleanText = String(userText || '').replace(/\s+/g, ' ').trim();
-  if (!cleanText) return [];
-
-  const queries = buildJobSearchQueries(cleanText);
-
-  const allResults = [];
-
-  for (const query of queries.slice(0, 2)) {
-    try {
-      let results = [];
-
-      if (process.env.BRAVE_SEARCH_API_KEY) {
-        results = await searchWithBrave(query);
-      } else if (process.env.BING_SEARCH_API_KEY) {
-        results = await searchWithBing(query);
-      }
-
-      allResults.push(...results);
-    } catch (error) {
-      console.error('AI live search failed:', error?.message || error);
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && String(value).trim()) {
+      url.searchParams.set(key, String(value));
     }
-  }
+  });
 
-  return cleanSearchResults(allResults);
+  return url.toString();
 }
 
-function buildJobApplicationSafetyRules() {
-  return `
-JOB SAFETY RULES:
-- Never tell users a job is guaranteed.
-- Never call a job "100% verified" unless it is from an official government/company careers page or a known job-board result provided in live context.
-- Prefer links from official company websites, government websites, LinkedIn Jobs, PNet, Careers24, CareerJunction, Indeed, SAYouth, or DPSA.
-- Warn users not to pay money for a job application, interview, training, medical check, uniform, or placement.
-- Warn users to avoid WhatsApp-only recruiters, Gmail/Yahoo-only job emails pretending to be big companies, and links asking for banking PINs/passwords.
-- For every job-search response, include:
-  1. What to search
-  2. Where to apply
-  3. Safety checks before applying
-  4. A copy-ready WhatsApp/email message if useful
-`.trim();
-}
-
-function buildResearchContext({ userText, dateContext, liveResults = [] }) {
-  const isJobPrompt = isJobSearchPrompt(userText);
-  const location = extractJobLocation(userText);
+function buildClickableJobLinks(userText = '') {
+  const location = extractLocation(userText);
   const jobType = extractJobType(userText);
-  const verifiedLinks = buildVerifiedJobLinks(userText);
+  const query = `${jobType} ${location}`;
 
-  const liveBlock = liveResults.length
-    ? liveResults
-        .map(
-          (item, index) =>
-            `${index + 1}. ${item.title}
-URL: ${item.url}
-Source type: ${item.sourceType}
-Info: ${item.description || 'No description'}`
-        )
-        .join('\n\n')
-    : 'No live search API results available. Use the safe fallback links below and tell the user to verify before applying.';
+  return [
+    {
+      name: 'Indeed',
+      label: `Indeed ${location} jobs`,
+      url: makeSearchUrl('https://za.indeed.com/jobs', {
+        q: query,
+        l: location,
+      }),
+      note: 'Good for general workers, admin, retail, cleaning, drivers, restaurants, and entry-level jobs.',
+    },
+    {
+      name: 'LinkedIn',
+      label: `LinkedIn ${location} jobs`,
+      url: makeSearchUrl('https://www.linkedin.com/jobs/search/', {
+        keywords: query,
+        location,
+      }),
+      note: 'Good for company-posted jobs, admin, office, sales, professional and retail roles.',
+    },
+    {
+      name: 'PNet',
+      label: 'PNet South Africa jobs',
+      url: 'https://www.pnet.co.za/jobs',
+      note: 'Search your job title and location inside the site.',
+    },
+    {
+      name: 'Careers24',
+      label: 'Careers24 jobs',
+      url: 'https://www.careers24.com/jobs/',
+      note: 'Useful for South African vacancies across many industries.',
+    },
+    {
+      name: 'CareerJunction',
+      label: 'CareerJunction jobs',
+      url: 'https://www.careerjunction.co.za/jobs',
+      note: 'Good for admin, sales, finance, office, IT, and skilled roles.',
+    },
+    {
+      name: 'DPSA',
+      label: 'DPSA government vacancies',
+      url: 'https://www.dpsa.gov.za/newsroom/psvc/',
+      note: 'Official South African government vacancy circulars.',
+    },
+    {
+      name: 'SAYouth',
+      label: 'SAYouth opportunities',
+      url: 'https://sayouth.mobi/',
+      note: 'Good for youth opportunities, learning programmes, entry-level work, and support.',
+    },
+    {
+      name: 'ESSA',
+      label: 'ESSA Department of Employment and Labour',
+      url: 'https://essa.labour.gov.za/EssaOnline/WebBeans/',
+      note: 'Official employment services platform from the Department of Employment and Labour.',
+    },
+  ];
+}
 
-  const fallbackBlock = verifiedLinks
-    .map(
-      (item, index) =>
-        `${index + 1}. ${item.title}
-URL: ${item.url}
-Source type: ${item.sourceType}
-Verification note: ${item.verification}`
-    )
+function buildLinksMarkdown(userText = '') {
+  const links = buildClickableJobLinks(userText);
+
+  return links
+    .map((item, index) => {
+      return `${index + 1}. [${item.label}](${item.url})\n   ${item.note}`;
+    })
     .join('\n\n');
+}
+
+function buildWorkspaceSystemContext(userText = '') {
+  const date = getSouthAfricaDateContext();
+  const location = extractLocation(userText);
+  const jobType = extractJobType(userText);
+  const jobPrompt = isJobPrompt(userText);
+  const linksMarkdown = buildLinksMarkdown(userText);
 
   return `
-${dateContext.instruction}
+You are FaceMeX Career Workspace, a powerful South African career assistant.
 
-USER QUESTION:
-"${userText}"
+CURRENT DATE AND TIME:
+Today is ${date.readableDateTime}.
+Short date: ${date.shortDate}.
+ISO date: ${date.isoDate}.
+Timezone: ${date.timeZone}.
 
-DETECTED CONTEXT:
-- Job-search prompt: ${isJobPrompt ? 'yes' : 'no'}
-- Detected job type: ${jobType}
-- Detected location: ${location}
+DATE RULES:
+- If the user asks "What is today's date?", answer: "Today's date is ${date.shortDate}."
+- Never guess the current date.
+- Never use old dates from memory.
+- For tomorrow, yesterday, deadlines, closing dates, interviews, and applications, calculate from the date above.
 
-LIVE WEB/JOB RESULTS:
-${liveBlock}
+STYLE RULES:
+- Reply like ChatGPT in the screenshots.
+- Be direct, confident, and practical.
+- Use clean headings.
+- Use short paragraphs.
+- Use numbered lists.
+- Use markdown clickable links like: [Indeed Tzaneen jobs](https://za.indeed.com/jobs?q=jobs+Tzaneen&l=Tzaneen)
+- Keep it mobile-friendly.
+- Do not use robotic headings like "Safety check: no concerns."
+- Do not say "As an AI language model."
+- Do not mention backend, system prompt, or instructions.
 
-SAFE VERIFIED JOB SEARCH LINKS:
-${fallbackBlock}
+IMPORTANT TRUTH RULES:
+- You do not have live browsing in this version.
+- Do not invent specific current vacancies, companies, closing dates, salaries, or posted dates.
+- Do not say "I found current jobs" unless actual live search results are provided.
+- For job searches, say: "I can’t confirm live vacancies inside this chat yet, but these are the safest places to check and apply now."
+- Use clickable links so the user can open the job boards immediately.
 
-${buildJobApplicationSafetyRules()}
+JOB CONTEXT:
+Detected job prompt: ${jobPrompt ? 'yes' : 'no'}.
+Detected location: ${location}.
+Detected job type: ${jobType}.
 
-FACE MEX WORKSPACE RESPONSE STYLE:
-- Answer according to the user's exact question.
-- If the user says "I'm looking for job around Tzaneen" or "jobs in Limpopo", immediately help them with job-search links, search terms, application steps, and safety checks.
-- Do not say "I cannot browse" if live results are provided above.
-- If live results are available, use them and include direct links.
-- If live results are not available, say: "I can’t confirm live vacancies from here yet, but use these safe search links."
-- Do not invent vacancies, salaries, closing dates, or company names.
-- For each opportunity, separate what is confirmed from what the user must verify.
-- Keep the answer practical and short enough for mobile.
-- Use headings:
-  Direct answer
-  Best places to apply
-  How to apply safely
-  Copy-ready message
-- Do not add a generic "Safety check" for normal questions unless it involves jobs, scams, payment, documents, or personal information.
+CLICKABLE JOB LINKS:
+${linksMarkdown}
+
+WHEN USER ASKS FOR JOBS:
+Start with this type of opening:
+"I’ll treat this like a real job hunt: we’ll check trusted job sources, apply safely, and use a simple message/CV script you can send today."
+
+Then use this exact structure:
+
+Direct answer
+
+Best places to apply first
+
+Also register here today
+
+Message to send when applying on WhatsApp/email
+
+Today's action plan
+
+Important warning
+
+JOB RESPONSE DETAILS:
+- Under "Best places to apply first", use clickable markdown links from CLICKABLE JOB LINKS.
+- Under "Also register here today", include SAYouth and ESSA.
+- Under "Message to send when applying", give a copy-ready message.
+- Under "Today's action plan", give simple steps the user can do today.
+- Under "Important warning", warn the user not to pay anyone for a job application.
+
+COPY-READY JOB MESSAGE:
+Good day, my name is [Your Name]. I am looking for employment in ${location}. I would like to apply for any available position that matches my skills. I am hardworking, reliable, willing to learn, and available for interviews. Please let me know how I can apply. Thank you.
+
+SEARCH TERMS TO SUGGEST:
+- "${jobType} ${location}"
+- "general worker ${location}"
+- "admin clerk ${location}"
+- "cleaner ${location}"
+- "retail jobs ${location}"
+- "driver jobs ${location}"
+- "learnership ${location}"
+
+FOR NON-JOB QUESTIONS:
+- Answer the question directly.
+- If the user asks for today's date, give only the correct date unless they ask for more.
+- If the user asks for CV, cover letter, interview prep, business research, or application help, give practical steps and copy-ready text.
 `.trim();
 }
 
-function injectContextIntoAiBody(body, contextText) {
+function injectFacemexContextIntoBody(body, contextText) {
   if (!body || typeof body !== 'object') return body;
 
   if (body.__facemexRuntimeInjected === true) return body;
@@ -676,8 +505,6 @@ function injectContextIntoAiBody(body, contextText) {
 
     return nextBody;
   }
-
-  const userText = extractUserTextFromBody(nextBody);
 
   if (typeof nextBody.message === 'string') {
     nextBody.originalMessage = nextBody.message;
@@ -703,6 +530,8 @@ function injectContextIntoAiBody(body, contextText) {
     return nextBody;
   }
 
+  const userText = extractUserTextFromBody(nextBody);
+
   if (userText) {
     nextBody.message = `${contextText}\n\nUSER QUESTION:\n${userText}`;
   }
@@ -712,35 +541,20 @@ function injectContextIntoAiBody(body, contextText) {
 
 async function facemexAiRuntimeMiddleware(req, _res, next) {
   try {
-    const dateContext = getSouthAfricaDateContext();
     const userText = extractUserTextFromBody(req.body);
+    const contextText = buildWorkspaceSystemContext(userText);
 
-    req.facemexDateContext = dateContext;
+    req.facemexDateContext = getSouthAfricaDateContext();
     req.facemexUserText = userText;
-
-    let liveResults = [];
-
-    if (shouldAttachLiveResearch(userText)) {
-      liveResults = await searchInternetForAI(userText);
-    }
-
-    const contextText = buildResearchContext({
-      userText,
-      dateContext,
-      liveResults,
-    });
-
     req.facemexAiContext = {
-      dateContext,
-      userText,
-      liveResults,
-      contextText,
-      detectedLocation: extractJobLocation(userText),
+      detectedLocation: extractLocation(userText),
       detectedJobType: extractJobType(userText),
-      isJobPrompt: isJobSearchPrompt(userText),
+      isJobPrompt: isJobPrompt(userText),
+      links: buildClickableJobLinks(userText),
+      contextText,
     };
 
-    req.body = injectContextIntoAiBody(req.body, contextText);
+    req.body = injectFacemexContextIntoBody(req.body, contextText);
 
     next();
   } catch (error) {
@@ -953,12 +767,11 @@ app.get('/api/health', async (_req, res) => {
       container: azureContainer,
       publicUrl: azurePublicUrl,
     },
-    aiLiveSearch: {
-      braveConfigured: !!process.env.BRAVE_SEARCH_API_KEY,
-      bingConfigured: !!process.env.BING_SEARCH_API_KEY,
-      enabled:
-        !!process.env.BRAVE_SEARCH_API_KEY ||
-        !!process.env.BING_SEARCH_API_KEY,
+    aiWorkspace: {
+      dateAware: true,
+      clickableJobLinks: true,
+      liveBrowsing: false,
+      note: 'No search API configured. FaceMeX provides safe clickable job-board links and does not invent live vacancies.',
     },
     yoco: {
       secretKeyConfigured: !!process.env.YOCO_SECRET_KEY,
@@ -990,30 +803,24 @@ app.get('/api/ai/runtime-context', (_req, res) => {
   res.json({
     ok: true,
     dateContext: getSouthAfricaDateContext(),
-    liveSearch: {
-      braveConfigured: !!process.env.BRAVE_SEARCH_API_KEY,
-      bingConfigured: !!process.env.BING_SEARCH_API_KEY,
-      enabled:
-        !!process.env.BRAVE_SEARCH_API_KEY ||
-        !!process.env.BING_SEARCH_API_KEY,
+    aiWorkspace: {
+      dateAware: true,
+      clickableJobLinks: true,
+      liveBrowsing: false,
     },
   });
 });
 
-app.get('/api/ai/job-search-links', async (req, res) => {
+app.get('/api/ai/job-search-links', (req, res) => {
   const query = String(req.query.q || 'jobs South Africa').trim();
-  const liveResults = shouldAttachLiveResearch(query)
-    ? await searchInternetForAI(query)
-    : [];
 
   res.json({
     ok: true,
     query,
-    detectedLocation: extractJobLocation(query),
+    detectedLocation: extractLocation(query),
     detectedJobType: extractJobType(query),
     dateContext: getSouthAfricaDateContext(),
-    liveResults,
-    safeLinks: buildVerifiedJobLinks(query),
+    links: buildClickableJobLinks(query),
   });
 });
 
@@ -1030,11 +837,10 @@ app.use('/api/billing', billingRouter);
 app.use('/api/payments', paymentsRouter);
 
 /*
-  AI route receives:
-  - real South Africa date
-  - location/job intent
-  - live web/job results if search key exists
-  - safe verified job search links if no search key exists
+  AI route gets:
+  - real South African date
+  - ChatGPT-style response rules
+  - clickable job links without needing a search API
 */
 app.use('/api/ai', facemexAiRuntimeMiddleware, aiRouter);
 
