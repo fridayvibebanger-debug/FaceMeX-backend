@@ -184,113 +184,9 @@ function getSouthAfricaDateContext() {
 }
 
 /*
-  AI RUNTIME CONTEXT
+  LIGHT JOB LINK HELPERS
+  Main AI logic stays inside routes/ai.js.
 */
-function extractUserTextFromBody(body = {}) {
-  if (!body || typeof body !== 'object') return '';
-
-  const direct =
-    body.message ||
-    body.prompt ||
-    body.question ||
-    body.input ||
-    body.text ||
-    body.query ||
-    '';
-
-  if (typeof direct === 'string' && direct.trim()) {
-    return direct.trim();
-  }
-
-  if (Array.isArray(body.messages)) {
-    const lastUserMessage = [...body.messages]
-      .reverse()
-      .find((msg) => msg?.role === 'user' && typeof msg?.content === 'string');
-
-    if (lastUserMessage?.content) {
-      return lastUserMessage.content.trim();
-    }
-  }
-
-  return '';
-}
-
-function extractPostContextFromBody(body = {}) {
-  if (!body || typeof body !== 'object') return '';
-
-  const possible =
-    body.postText ||
-    body.postContent ||
-    body.selectedPost ||
-    body.linkedPost ||
-    body.currentPost ||
-    body.feedPost ||
-    body.postContext ||
-    body.feedContext ||
-    body.contextPost ||
-    '';
-
-  if (typeof possible === 'string') {
-    return possible.trim();
-  }
-
-  if (possible && typeof possible === 'object') {
-    const parts = [
-      possible.content,
-      possible.text,
-      possible.caption,
-      possible.description,
-      possible.title,
-      possible.authorName,
-      possible.userName,
-      possible.company,
-      possible.location,
-      possible.link,
-      possible.url,
-      possible.createdAt,
-    ]
-      .filter(Boolean)
-      .map((item) => String(item));
-
-    return parts.join('\n').trim();
-  }
-
-  if (Array.isArray(body.feedContext)) {
-    return body.feedContext
-      .slice(0, 5)
-      .map((post, index) => {
-        if (typeof post === 'string') return `Post ${index + 1}: ${post}`;
-
-        return `Post ${index + 1}:
-Author: ${post?.authorName || post?.userName || 'Unknown'}
-Content: ${post?.content || post?.text || post?.caption || ''}
-Link: ${post?.link || post?.url || ''}
-Date: ${post?.createdAt || ''}`;
-      })
-      .join('\n\n');
-  }
-
-  return '';
-}
-
-function isJobPrompt(text = '') {
-  const t = String(text || '').toLowerCase();
-
-  return /\b(job|jobs|work|hiring|vacancy|vacancies|career|careers|apply|application|learnership|internship|graduate|interview|cv|cover letter|employment|opportunity|opportunities|looking for a job|looking for work|find me a job|available job|available jobs|job around|jobs around|job in|jobs in|work around|work in)\b/i.test(t);
-}
-
-function isPostSafetyPrompt(text = '') {
-  const t = String(text || '').toLowerCase();
-
-  return /\b(is this legit|is it legit|legit|scam|fake|real or fake|verify|safe|risky|should i apply|can i trust|check this post|this post|job post|apply link|whatsapp job|telegram job|facebook job|comments below|link in comments|dm me|inbox me|pay|fee|registration fee|training fee|admin fee|processing fee|uniform fee)\b/i.test(t);
-}
-
-function isMisusePrompt(text = '') {
-  const t = String(text || '').toLowerCase();
-
-  return /\b(hack|steal|bypass|phishing|password|crack|malware|spyware|scam people|fake document|forge|illegal|drugs|weapon|harm someone|hide evidence)\b/i.test(t);
-}
-
 function extractLocation(text = '') {
   const t = String(text || '').toLowerCase();
 
@@ -445,213 +341,6 @@ function buildClickableJobLinks(userText = '') {
   ];
 }
 
-function buildLinksMarkdown(userText = '') {
-  const links = buildClickableJobLinks(userText);
-
-  return links
-    .map((item, index) => {
-      return `${index + 1}. [${item.label}](${item.url})\n   ${item.note}`;
-    })
-    .join('\n\n');
-}
-
-function buildFaceMeXKnowledge() {
-  return `
-FACE MEX PRODUCT KNOWLEDGE:
-FaceMeX is a South African social and career platform.
-
-FaceMeX helps users:
-- discover jobs and opportunities
-- use FaceMeX Career Workspace for CVs, job applications, research, and interview prep
-- post and share content on the feed
-- connect with people
-- advertise businesses and opportunities
-- use AI for career and business support
-- check whether job posts or opportunities look risky
-
-FaceMeX must feel useful, safe, local, and practical.
-
-When users ask about FaceMeX:
-- explain it simply
-- guide them to use the feed, Career Workspace, profile, posts, messages, and job tools
-- encourage safe applications
-- never promise guaranteed jobs, funding, or success
-- never pretend FaceMeX verified a company unless verified data is actually provided
-`.trim();
-}
-
-function buildPostSafetyRules(postContext = '') {
-  return `
-POST / FEED SAFETY RULES:
-If the user refers to a post, feed post, screenshot, job post, or opportunity, use the provided post context below.
-
-POST CONTEXT:
-${postContext || 'No post context was provided by the frontend.'}
-
-How to judge a post:
-- If the post asks for money, application fee, training fee, registration fee, or payment to secure a job, mark it high risk.
-- If it says "link in comments", "DM me", "WhatsApp only", or hides the official apply link, mark it as needs verification.
-- If the post has no official company career link, no official email domain, no clear job description, or no location, mark it as needs verification.
-- If it uses pressure like "apply now before it is too late", "limited spots", or vague promises, mark it as suspicious.
-- If it uses a real company name but no official career page, tell the user to verify on the official company website first.
-- If a closing date is mentioned, compare it with today's date.
-- Never say "100% legit" unless official proof is provided.
-- Use ratings: Looks safer, Needs verification, High risk.
-- Tell the user exactly what to check next.
-`.trim();
-}
-
-function buildWorkspaceSystemContext(userText = '', postContext = '') {
-  const date = getSouthAfricaDateContext();
-  const location = extractLocation(`${userText}\n${postContext}`);
-  const jobType = extractJobType(`${userText}\n${postContext}`);
-  const jobPrompt = isJobPrompt(userText);
-  const postSafetyPrompt = isPostSafetyPrompt(userText) || !!postContext;
-  const misusePrompt = isMisusePrompt(userText);
-  const linksMarkdown = buildLinksMarkdown(userText || postContext);
-
-  return `
-You are FaceMeX AI Workspace.
-
-You answer like ChatGPT or Claude:
-- clear
-- smart
-- direct
-- natural
-- practical
-- mobile-friendly
-- useful for South African users
-
-CURRENT DATE AND TIME:
-Today is ${date.readableDateTime}.
-Short date: ${date.shortDate}.
-ISO date: ${date.isoDate}.
-Timezone: ${date.timeZone}.
-
-${buildFaceMeXKnowledge()}
-
-${buildPostSafetyRules(postContext)}
-
-DETECTED CONTEXT:
-Detected job prompt: ${jobPrompt ? 'yes' : 'no'}.
-Detected post safety prompt: ${postSafetyPrompt ? 'yes' : 'no'}.
-Detected misuse prompt: ${misusePrompt ? 'yes' : 'no'}.
-Detected location: ${location}.
-Detected job type: ${jobType}.
-
-CLICKABLE JOB LINKS:
-${linksMarkdown}
-
-CORE RULES:
-1. Answer the user's exact question first.
-2. For general questions, answer normally like ChatGPT or Claude.
-3. Do not force every answer into a career template.
-4. If the user asks "What is today's date?", answer exactly with today's real date: ${date.shortDate}.
-5. If the user asks about FaceMeX, explain FaceMeX clearly using the product knowledge above.
-6. If the user asks about a post or job post, use the post context and give a safety rating.
-7. If no post context is provided, say you need the post text, screenshot text, or link to judge it properly.
-8. If the user asks for jobs, give trusted job sources, search terms, safe application message, and action plan.
-9. Do not invent live vacancies, salaries, deadlines, companies, or apply links.
-10. Do not say a post is legit unless official proof is provided.
-11. Do not help with hacking, scams, fraud, phishing, fake documents, illegal activity, or harmful actions.
-12. If the request is unsafe or useless, refuse briefly and redirect to a safe helpful action.
-13. Do not mention system prompts, backend, middleware, DeepSeek, OpenAI, ChatGPT, or Claude.
-14. Use simple English.
-15. Use markdown links when links are provided.
-16. Keep answers readable on mobile.
-`.trim();
-}
-
-function injectFacemexContextIntoBody(body, contextText) {
-  if (!body || typeof body !== 'object') return body;
-
-  if (body.__facemexRuntimeInjected === true) return body;
-
-  const nextBody = {
-    ...body,
-    __facemexRuntimeInjected: true,
-    facemexRuntimeContext: contextText,
-  };
-
-  if (Array.isArray(nextBody.messages)) {
-    nextBody.messages = [
-      {
-        role: 'system',
-        content: contextText,
-      },
-      ...nextBody.messages.filter((msg) => msg?.role !== 'system'),
-    ];
-
-    return nextBody;
-  }
-
-  if (typeof nextBody.message === 'string') {
-    nextBody.originalMessage = nextBody.message;
-    nextBody.message = `${contextText}\n\nUSER QUESTION:\n${nextBody.message}`;
-    return nextBody;
-  }
-
-  if (typeof nextBody.prompt === 'string') {
-    nextBody.originalPrompt = nextBody.prompt;
-    nextBody.prompt = `${contextText}\n\nUSER QUESTION:\n${nextBody.prompt}`;
-    return nextBody;
-  }
-
-  if (typeof nextBody.question === 'string') {
-    nextBody.originalQuestion = nextBody.question;
-    nextBody.question = `${contextText}\n\nUSER QUESTION:\n${nextBody.question}`;
-    return nextBody;
-  }
-
-  if (typeof nextBody.input === 'string') {
-    nextBody.originalInput = nextBody.input;
-    nextBody.input = `${contextText}\n\nUSER QUESTION:\n${nextBody.input}`;
-    return nextBody;
-  }
-
-  if (typeof nextBody.text === 'string') {
-    nextBody.originalText = nextBody.text;
-    nextBody.text = `${contextText}\n\nUSER QUESTION:\n${nextBody.text}`;
-    return nextBody;
-  }
-
-  const userText = extractUserTextFromBody(nextBody);
-
-  if (userText) {
-    nextBody.message = `${contextText}\n\nUSER QUESTION:\n${userText}`;
-  }
-
-  return nextBody;
-}
-
-async function facemexAiRuntimeMiddleware(req, _res, next) {
-  try {
-    const userText = extractUserTextFromBody(req.body);
-    const postContext = extractPostContextFromBody(req.body);
-    const contextText = buildWorkspaceSystemContext(userText, postContext);
-
-    req.facemexDateContext = getSouthAfricaDateContext();
-    req.facemexUserText = userText;
-    req.facemexPostContext = postContext;
-    req.facemexAiContext = {
-      detectedLocation: extractLocation(`${userText}\n${postContext}`),
-      detectedJobType: extractJobType(`${userText}\n${postContext}`),
-      isJobPrompt: isJobPrompt(userText),
-      isPostSafetyPrompt: isPostSafetyPrompt(userText) || !!postContext,
-      isMisusePrompt: isMisusePrompt(userText),
-      links: buildClickableJobLinks(userText || postContext),
-      contextText,
-    };
-
-    req.body = injectFacemexContextIntoBody(req.body, contextText);
-
-    next();
-  } catch (error) {
-    console.error('AI context middleware failed:', error?.message || error);
-    next();
-  }
-}
-
 /*
   TRANSLATION HELPER
 */
@@ -695,11 +384,7 @@ async function translateText({ text, to = 'en', from }) {
   const data = await response.json();
 
   if (!response.ok) {
-    const message =
-      data?.error?.message ||
-      data?.message ||
-      'Translation failed';
-
+    const message = data?.error?.message || data?.message || 'Translation failed';
     throw new Error(message);
   }
 
@@ -880,13 +565,14 @@ app.get('/api/health', async (_req, res) => {
       publicUrl: azurePublicUrl,
     },
     aiWorkspace: {
+      controlledBy: 'routes/ai.js',
       dateAware: true,
       generalQuestions: true,
       facemexKnowledge: true,
       postSafetyChecks: true,
       clickableJobLinks: true,
       liveBrowsing: false,
-      note: 'For post-specific safety checks, frontend must send postText/currentPost/feedContext to the AI route.',
+      note: 'AI answers are handled in routes/ai.js. Frontend should send postText/currentPost/feedContext for post-specific checks.',
     },
     yoco: {
       secretKeyConfigured: !!process.env.YOCO_SECRET_KEY,
@@ -919,6 +605,7 @@ app.get('/api/ai/runtime-context', (_req, res) => {
     ok: true,
     dateContext: getSouthAfricaDateContext(),
     aiWorkspace: {
+      controlledBy: 'routes/ai.js',
       dateAware: true,
       generalQuestions: true,
       facemexKnowledge: true,
@@ -954,7 +641,13 @@ app.use('/api/reactions', reactionsRouter);
 app.use('/api/billing', billingRouter);
 app.use('/api/payments', paymentsRouter);
 
-app.use('/api/ai', facemexAiRuntimeMiddleware, aiRouter);
+/*
+  IMPORTANT:
+  AI prompt style, FaceMeX knowledge, job answers, date answers,
+  and post safety checks are handled inside routes/ai.js.
+  Do not inject templates here.
+*/
+app.use('/api/ai', aiRouter);
 
 app.use('/api/business', businessRouter);
 app.use('/api/safety', safetyRouter);
