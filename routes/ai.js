@@ -19,7 +19,6 @@ function stripMarkdown(text = '') {
     .replace(/\*\*/g, '')
     .replace(/###/g, '')
     .replace(/##/g, '')
-    .replace(/#/g, '')
     .replace(/```/g, '')
     .trim();
 }
@@ -51,6 +50,73 @@ function toBoolean(value) {
   const v = String(value || '').trim().toLowerCase();
 
   return v === 'true' || v === '1' || v === 'yes' || v === 'on';
+}
+
+function getSouthAfricaDateContext() {
+  const now = new Date();
+  const timeZone = 'Africa/Johannesburg';
+
+  const readableDateTime = new Intl.DateTimeFormat('en-ZA', {
+    timeZone,
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(now);
+
+  const shortDate = new Intl.DateTimeFormat('en-ZA', {
+    timeZone,
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  }).format(now);
+
+  const isoDate = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(now);
+
+  return {
+    nowIso: now.toISOString(),
+    timeZone,
+    readableDateTime,
+    shortDate,
+    isoDate,
+  };
+}
+
+function normalizeUserPromptText(text = '') {
+  const raw = clean(text);
+
+  if (!raw.includes('USER QUESTION:')) return raw;
+
+  const parts = raw.split('USER QUESTION:');
+  return clean(parts[parts.length - 1]);
+}
+
+function isDatePrompt(text = '') {
+  const t = clean(text).toLowerCase();
+
+  return (
+    t === 'date' ||
+    t === 'today' ||
+    t === 'what is today' ||
+    t === 'what is today?' ||
+    t === "what is today's date" ||
+    t === "what is today's date?" ||
+    /\b(today'?s date|today date|current date|date today|what date is it|what is the date|what's the date)\b/i.test(t)
+  );
+}
+
+function isJobSearchPrompt(text = '') {
+  const t = clean(text).toLowerCase();
+
+  return /\b(job|jobs|work|hiring|vacancy|vacancies|career|careers|apply|application|learnership|internship|graduate|employment|opportunity|opportunities|looking for a job|looking for job|looking for work|find me a job|find jobs|available job|available jobs|job around|jobs around|job in|jobs in|work around|work in)\b/i.test(t);
 }
 
 async function callDeepseekChat(payload) {
@@ -104,6 +170,250 @@ async function callLlamaChat(payload) {
         : 512,
     ...rest,
   });
+}
+
+/* ---------------------------------------------
+   JOB LINK HELPERS
+--------------------------------------------- */
+
+function extractLocation(text = '') {
+  const t = clean(text).toLowerCase();
+
+  const locations = [
+    'tzaneen',
+    'limpopo',
+    'polokwane',
+    'lenyenye',
+    'nkowankowa',
+    'maake plaza',
+    'maake',
+    'giyani',
+    'phalaborwa',
+    'modjadjiskloof',
+    'mankweng',
+    'mokopane',
+    'thohoyandou',
+    'burgersdorp',
+    'hoedspruit',
+    'johannesburg',
+    'pretoria',
+    'durban',
+    'cape town',
+    'south africa',
+  ];
+
+  const found = locations.find((loc) => t.includes(loc));
+
+  if (!found) return 'South Africa';
+
+  return found
+    .split(' ')
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
+function extractJobType(text = '') {
+  const t = clean(text).toLowerCase();
+
+  const jobTypes = [
+    'general worker',
+    'cleaner',
+    'admin clerk',
+    'admin',
+    'administrative',
+    'clerk',
+    'driver',
+    'cashier',
+    'security',
+    'retail',
+    'sales',
+    'waiter',
+    'waitress',
+    'receptionist',
+    'call centre',
+    'data entry',
+    'learnership',
+    'internship',
+    'graduate',
+    'warehouse',
+    'store assistant',
+    'teacher assistant',
+    'nurse',
+    'clinic',
+    'municipality',
+    'government',
+    'restaurant',
+    'griller',
+    'packer',
+    'merchandiser',
+  ];
+
+  const found = jobTypes.find((job) => t.includes(job));
+  return found || 'jobs';
+}
+
+function makeSearchUrl(base, params) {
+  const url = new URL(base);
+
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && String(value).trim()) {
+      url.searchParams.set(key, String(value));
+    }
+  });
+
+  return url.toString();
+}
+
+function buildClickableJobLinks(userText = '') {
+  const location = extractLocation(userText);
+  const jobType = extractJobType(userText);
+  const query = `${jobType} ${location}`;
+
+  return [
+    {
+      name: 'Indeed',
+      label: `Indeed ${location} jobs`,
+      url: makeSearchUrl('https://za.indeed.com/jobs', {
+        q: query,
+        l: location,
+      }),
+      note: 'Good for general workers, admin, retail, cleaning, drivers, restaurants, and entry-level jobs.',
+    },
+    {
+      name: 'LinkedIn',
+      label: `LinkedIn ${location} jobs`,
+      url: makeSearchUrl('https://www.linkedin.com/jobs/search/', {
+        keywords: query,
+        location,
+      }),
+      note: 'Good for company-posted jobs, admin, office, sales, professional and retail roles.',
+    },
+    {
+      name: 'PNet',
+      label: 'PNet South Africa jobs',
+      url: 'https://www.pnet.co.za/jobs',
+      note: 'Search your job title and location inside the site.',
+    },
+    {
+      name: 'Careers24',
+      label: 'Careers24 jobs',
+      url: 'https://www.careers24.com/jobs/',
+      note: 'Useful for South African vacancies across many industries.',
+    },
+    {
+      name: 'CareerJunction',
+      label: 'CareerJunction jobs',
+      url: 'https://www.careerjunction.co.za/jobs',
+      note: 'Good for admin, sales, finance, office, IT, and skilled roles.',
+    },
+    {
+      name: 'DPSA',
+      label: 'DPSA government vacancies',
+      url: 'https://www.dpsa.gov.za/newsroom/psvc/',
+      note: 'Official South African government vacancy circulars.',
+    },
+    {
+      name: 'SAYouth',
+      label: 'SAYouth opportunities',
+      url: 'https://sayouth.mobi/',
+      note: 'Good for youth opportunities, learning programmes, entry-level work, and support.',
+    },
+    {
+      name: 'ESSA',
+      label: 'ESSA Department of Employment and Labour',
+      url: 'https://essa.labour.gov.za/EssaOnline/WebBeans/',
+      note: 'Official employment services platform from the Department of Employment and Labour.',
+    },
+  ];
+}
+
+function findLink(links, name) {
+  return links.find((item) => item.name === name);
+}
+
+function buildJobHuntAnswer(userText = '') {
+  const date = getSouthAfricaDateContext();
+  const location = extractLocation(userText);
+  const jobType = extractJobType(userText);
+  const links = buildClickableJobLinks(userText);
+
+  const indeed = findLink(links, 'Indeed');
+  const linkedIn = findLink(links, 'LinkedIn');
+  const pnet = findLink(links, 'PNet');
+  const careers24 = findLink(links, 'Careers24');
+  const dpsa = findLink(links, 'DPSA');
+  const sayouth = findLink(links, 'SAYouth');
+  const essa = findLink(links, 'ESSA');
+
+  return `I’ll treat this like a real job hunt: we’ll check trusted job sources, apply safely, and use a simple message/CV script you can send today.
+
+## Direct answer
+
+I can’t confirm live vacancies inside this chat yet, but these are the safest places to check and apply now for **${jobType} around ${location}**.
+
+Today’s date is **${date.shortDate}**.
+
+## Best places to apply first
+
+1. [${indeed.label}](${indeed.url})  
+${indeed.url}  
+${indeed.note}
+
+2. [${linkedIn.label}](${linkedIn.url})  
+${linkedIn.url}  
+${linkedIn.note}
+
+3. [${pnet.label}](${pnet.url})  
+${pnet.url}  
+${pnet.note}
+
+4. [${careers24.label}](${careers24.url})  
+${careers24.url}  
+${careers24.note}
+
+5. [${dpsa.label}](${dpsa.url})  
+${dpsa.url}  
+${dpsa.note}
+
+## Also register here today
+
+1. [${sayouth.label}](${sayouth.url})  
+${sayouth.url}  
+${sayouth.note}
+
+2. [${essa.label}](${essa.url})  
+${essa.url}  
+${essa.note}
+
+## Search these words
+
+Use these exact searches:
+
+- "${jobType} ${location}"
+- "general worker ${location}"
+- "admin clerk ${location}"
+- "cleaner ${location}"
+- "retail jobs ${location}"
+- "driver jobs ${location}"
+- "learnership ${location}"
+
+## Message to send when applying on WhatsApp/email
+
+Copy this:
+
+> Good day, my name is [Your Name]. I am looking for employment in ${location}. I would like to apply for any available position that matches my skills. I am hardworking, reliable, willing to learn, and available for interviews. Please let me know how I can apply. Thank you.
+
+## Today’s action plan
+
+1. Open Indeed and LinkedIn first.
+2. Search **"${jobType} ${location}"**.
+3. Apply to 3 jobs today.
+4. Register or update your profile on SAYouth and ESSA.
+5. Save every job link you apply for so you can follow up later.
+
+## Important warning
+
+Do **not** pay anyone for a job application. Legit companies do not ask for “application fees,” “training fees,” or money to secure an interview.`;
 }
 
 /* ---------------------------------------------
@@ -192,6 +502,10 @@ async function captionImageWithHF({ imageUrl, imageDataUrl }) {
 function detectCareerIntent(text) {
   const t = String(text || '').toLowerCase();
 
+  if (isDatePrompt(t)) {
+    return 'date';
+  }
+
   const wantsBothEmailAndWhatsapp =
     /(email|mail|send cv|send my cv|application email|cover letter)/i.test(t) &&
     /(whatsapp|message|dm|sms|text)/i.test(t);
@@ -212,6 +526,10 @@ function detectCareerIntent(text) {
     return 'verify-opportunity';
   }
 
+  if (isJobSearchPrompt(t)) {
+    return 'job-search';
+  }
+
   if (/(email|mail|cover letter|application email|send cv|send my cv|email cv)/i.test(t)) {
     return 'email-application';
   }
@@ -228,12 +546,6 @@ function detectCareerIntent(text) {
     return 'cv-profile';
   }
 
-  if (
-    /(job|jobs|vacancy|vacancies|hiring|opportunities|opportunity|learnership|internship|work|latest job|latest jobs|truck job|driver job)/i.test(t)
-  ) {
-    return 'job-search';
-  }
-
   if (/(research|find out|company|market|industry|business idea|analyse|analyze)/i.test(t)) {
     return 'research';
   }
@@ -242,8 +554,22 @@ function detectCareerIntent(text) {
 }
 
 function buildCareerSystemPrompt(intent) {
+  const date = getSouthAfricaDateContext();
+
   return `
 You are FaceMeX Career Workspace, a powerful practical AI assistant for South African users.
+
+Current date context:
+Today is ${date.readableDateTime}.
+Short date: ${date.shortDate}.
+ISO date: ${date.isoDate}.
+Timezone: ${date.timeZone}.
+
+Critical date rules:
+1. If the user asks for today's date, answer with: Today's date is ${date.shortDate}.
+2. Never guess the current date.
+3. Never use old dates from memory.
+4. For tomorrow, yesterday, deadlines, interviews, closing dates, and applications, calculate from the date above.
 
 You help with:
 jobs, CVs, interviews, applications, WhatsApp messages, email writing, research, business opportunities, investors, funding, networking, startup growth, fake job checks, and opportunity safety.
@@ -251,25 +577,21 @@ jobs, CVs, interviews, applications, WhatsApp messages, email writing, research,
 Critical rules:
 1. Answer the user's exact request first.
 2. Do not change the topic.
-3. If the user asks for an email, write the email first.
-4. If the user asks for a WhatsApp message, write the WhatsApp message first.
-5. If the user asks for both an email and WhatsApp message, provide both clearly.
-6. If the user asks about investors, funding, startup networking, business opportunities, partnerships, or business growth, do not answer as if they are asking for a job.
-7. If the user asks for latest jobs, explain where to search and how to apply. Do not invent fake live vacancies.
-8. If the user asks for a truck job, driver job, or local job, give practical local job-search steps.
-9. Every answer must include:
-Direct answer:
-Action plan:
-Copy-ready message/email/script:
-Safety check:
+3. If the user asks for jobs, do not only write an email. Give job-search links, search terms, action plan, and safe application message.
+4. If the user asks for an email, write the email first.
+5. If the user asks for a WhatsApp message, write the WhatsApp message first.
+6. If the user asks for both an email and WhatsApp message, provide both clearly.
+7. If the user asks about investors, funding, startup networking, business opportunities, partnerships, or business growth, do not answer as if they are asking for a job.
+8. If the user asks for latest jobs, explain where to search and how to apply. Do not invent fake live vacancies.
+9. If the user asks for a truck job, driver job, or local job, give practical local job-search steps.
 10. Use simple English.
 11. Focus on South Africa when relevant.
-12. Do not use markdown symbols like **, ###, tables, or JSON.
-13. Do not mention ChatGPT, Claude, or DeepSeek.
-14. Do not invent fake jobs, fake investors, fake companies, fake events, or fake contacts.
-15. Do not overuse generic advice.
-16. Do not talk about CV improvements unless useful to the request.
-17. Do not talk about weekly routines unless the user asks for a plan.
+12. Do not mention ChatGPT, Claude, or DeepSeek.
+13. Do not invent fake jobs, fake investors, fake companies, fake events, or fake contacts.
+14. Do not overuse generic advice.
+15. Do not talk about CV improvements unless useful to the request.
+16. Do not talk about weekly routines unless the user asks for a plan.
+17. Use clickable markdown links when links are provided.
 
 Detected intent: ${intent}
 `;
@@ -292,6 +614,8 @@ Extra preferences: ${input.preferences || 'Not provided'}
 
 Important:
 The user request is more important than the optional fields.
+If the user asks for jobs, answer as a job hunt, not only an email.
+If the user asks for today's date, answer with the real date from the system prompt.
 If the user asks for an email or WhatsApp message, write it directly.
 If company/contact person is missing, use placeholders like [Company Name], [Hiring Manager], [Your Name], [Your Phone Number].
 `;
@@ -300,9 +624,18 @@ If company/contact person is missing, use placeholders like [Company Name], [Hir
 function buildCareerFallbackAnswer(input) {
   const intent = input.intent;
   const role = clean(input.role) || 'the opportunity';
-  const location = clean(input.location) || 'South Africa';
+  const location = clean(input.location) || extractLocation(input.prompt || '') || 'South Africa';
   const company = clean(input.company) || '[Company Name]';
   const person = clean(input.contactPerson) || '[Hiring Manager]';
+  const date = getSouthAfricaDateContext();
+
+  if (intent === 'date') {
+    return `Today's date is ${date.shortDate}.`;
+  }
+
+  if (intent === 'job-search') {
+    return buildJobHuntAnswer(input.prompt || `${role} ${location}`);
+  }
 
   if (intent === 'email-and-message') {
     return `Direct answer:
@@ -418,24 +751,6 @@ Safety check:
 If they rush you, ask for money, or refuse to give clear company details, treat it as risky.`;
   }
 
-  if (intent === 'job-search') {
-    return `Direct answer:
-To find ${role} opportunities around ${location}, use job boards, company websites, Facebook groups, and direct messages to local businesses.
-
-Action plan:
-1. Search daily on Indeed, LinkedIn Jobs, Careers24, PNet, DPSA, Facebook groups, and company websites.
-2. Apply within 24 to 48 hours.
-3. Message local businesses directly.
-4. Track every application.
-5. Follow up after 3 to 5 working days.
-
-Copy-ready message:
-Good day. I am looking for ${role} opportunities around ${location}. Please may I ask if you are hiring or accepting CVs? I am available to send my CV. Thank you.
-
-Safety check:
-Avoid job posts that ask for upfront money, banking details, or ID copies before you verify the company.`;
-  }
-
   if (intent === 'cv-profile') {
     return `Direct answer:
 Your CV must be clear, short, and focused on the job you want.
@@ -479,6 +794,18 @@ function answerLooksWrongForIntent(answer, intent) {
 
   if (!a) return true;
 
+  if (intent === 'date') {
+    return !a.includes('today');
+  }
+
+  if (intent === 'job-search') {
+    return (
+      a.includes('here is a professional email') ||
+      a.includes('copy-ready email') ||
+      (!a.includes('indeed') && !a.includes('linkedin') && !a.includes('job'))
+    );
+  }
+
   if (intent === 'email-and-message') {
     return !a.includes('subject:') || !a.includes('whatsapp');
   }
@@ -505,11 +832,21 @@ function answerLooksWrongForIntent(answer, intent) {
 }
 
 function ensureCareerAnswer(answer, fallback, intent) {
-  const cleaned = stripMarkdown(answer);
+  const raw = clean(answer);
 
-  if (answerLooksWrongForIntent(cleaned, intent)) {
+  if (answerLooksWrongForIntent(raw, intent)) {
     return fallback;
   }
+
+  if (intent === 'job-search') {
+    return raw;
+  }
+
+  if (intent === 'date') {
+    return raw;
+  }
+
+  const cleaned = stripMarkdown(raw);
 
   const lower = cleaned.toLowerCase();
   const hasDirect = lower.includes('direct answer');
@@ -566,7 +903,7 @@ function professionalizeSummary(summary = '') {
 
   const lower = raw.toLowerCase();
 
-  if (lower.includes('media') || lower.includes('team management') || lower.includes('team management')) {
+  if (lower.includes('media') || lower.includes('team management')) {
     return 'Motivated and detail-oriented professional with experience in media management, team coordination, customer service, and communication. Skilled at supporting daily operations, organising tasks, working with people, and contributing to a productive team environment.';
   }
 
@@ -634,7 +971,7 @@ function professionalizeExtras(extras = '') {
   if (lower.includes('english')) languages.push('English: Fluent');
   if (lower.includes('sepedi')) languages.push('Sepedi: Mother tongue');
   if (lower.includes('zulu')) languages.push('Zulu: Conversational');
-  if (lower.includes('xitsonga') || lower.includes('tsonga')) languages.push('Xitsonga: Conversational');
+  if (lower.includes('xitsonga') || lower.includes('tsonga')) languages.push('itsonga: Conversational');
 
   if (lower.includes('computer')) technicalSkills.push('Basic computer literacy');
   if (lower.includes('ms office') || lower.includes('word') || lower.includes('excel')) technicalSkills.push('MS Office');
@@ -975,18 +1312,74 @@ router.get('/test', async (req, res) => {
 });
 
 /* ---------------------------------------------
+   RUNTIME CONTEXT TEST
+--------------------------------------------- */
+
+router.get('/runtime-context', (req, res) => {
+  const query = clean(req.query.q || 'jobs South Africa');
+
+  return res.json({
+    ok: true,
+    dateContext: getSouthAfricaDateContext(),
+    detectedLocation: extractLocation(query),
+    detectedJobType: extractJobType(query),
+    links: buildClickableJobLinks(query),
+  });
+});
+
+router.get('/job-search-links', (req, res) => {
+  const query = clean(req.query.q || 'jobs South Africa');
+
+  return res.json({
+    ok: true,
+    query,
+    detectedLocation: extractLocation(query),
+    detectedJobType: extractJobType(query),
+    dateContext: getSouthAfricaDateContext(),
+    links: buildClickableJobLinks(query),
+  });
+});
+
+/* ---------------------------------------------
    REPLY
 --------------------------------------------- */
 
 router.post('/reply', async (req, res) => {
   try {
     const { message = '', style = '' } = req.body || {};
+    const cleanedMessage = normalizeUserPromptText(message);
+
+    if (isDatePrompt(cleanedMessage)) {
+      const date = getSouthAfricaDateContext();
+
+      return res.json({
+        success: true,
+        response: `Today's date is ${date.shortDate}.`,
+        source: 'date-direct',
+      });
+    }
+
+    if (isJobSearchPrompt(cleanedMessage)) {
+      return res.json({
+        success: true,
+        response: buildJobHuntAnswer(cleanedMessage),
+        source: 'job-direct',
+      });
+    }
+
+    const date = getSouthAfricaDateContext();
 
     const prompt = `You are a helpful FaceMeX assistant.
+
+Current date:
+Today is ${date.readableDateTime}.
+Short date: ${date.shortDate}.
+Timezone: ${date.timeZone}.
+
 Style: ${style || 'clear and friendly'}
 
 Reply concisely to:
-${message}`;
+${cleanedMessage}`;
 
     try {
       const out = await callLlamaChat({
@@ -1030,7 +1423,7 @@ ${message}`;
 router.post('/deepseek', async (req, res) => {
   try {
     const { prompt = '' } = req.body || {};
-    const cleaned = clean(prompt);
+    const cleaned = normalizeUserPromptText(prompt);
 
     if (!cleaned) {
       return res.status(400).json({
@@ -1039,8 +1432,32 @@ router.post('/deepseek', async (req, res) => {
       });
     }
 
+    if (isDatePrompt(cleaned)) {
+      const date = getSouthAfricaDateContext();
+
+      return res.json({
+        ok: true,
+        text: `Today's date is ${date.shortDate}.`,
+        source: 'date-direct',
+      });
+    }
+
+    if (isJobSearchPrompt(cleaned)) {
+      return res.json({
+        ok: true,
+        text: buildJobHuntAnswer(cleaned),
+        source: 'job-direct',
+      });
+    }
+
+    const date = getSouthAfricaDateContext();
+
     const out = await callDeepseekChat({
       messages: [
+        {
+          role: 'system',
+          content: `You are FaceMeX AI. Today is ${date.readableDateTime}. Use this date for all date-related answers.`,
+        },
         {
           role: 'user',
           content: cleaned,
@@ -1803,7 +2220,7 @@ Sincerely,
    FACE MEX CAREER WORKSPACE - FIXED
 --------------------------------------------- */
 
-router.post('/pro/job-assistant', async (req, res) => {
+async function handleCareerWorkspace(req, res) {
   try {
     const {
       prompt = '',
@@ -1819,7 +2236,7 @@ router.post('/pro/job-assistant', async (req, res) => {
       creatorPlus,
     } = req.body || {};
 
-    const userPrompt = clean(prompt);
+    const userPrompt = normalizeUserPromptText(prompt || req.body?.message || req.body?.question || req.body?.input || '');
 
     if (!userPrompt) {
       return res.status(400).json({
@@ -1829,6 +2246,40 @@ router.post('/pro/job-assistant', async (req, res) => {
     }
 
     const intent = detectCareerIntent(userPrompt);
+    const date = getSouthAfricaDateContext();
+
+    if (intent === 'date') {
+      const answer = `Today's date is ${date.shortDate}.`;
+
+      return res.json({
+        ok: true,
+        answer,
+        reply: answer,
+        response: answer,
+        text: answer,
+        content: answer,
+        intent,
+        dateContext: date,
+        source: 'date-direct',
+      });
+    }
+
+    if (intent === 'job-search') {
+      const answer = buildJobHuntAnswer(userPrompt);
+
+      return res.json({
+        ok: true,
+        answer,
+        reply: answer,
+        response: answer,
+        text: answer,
+        content: answer,
+        intent,
+        dateContext: date,
+        links: buildClickableJobLinks(userPrompt),
+        source: 'job-direct',
+      });
+    }
 
     const fallbackAnswer = buildCareerFallbackAnswer({
       prompt: userPrompt,
@@ -1849,7 +2300,12 @@ router.post('/pro/job-assistant', async (req, res) => {
       return res.json({
         ok: true,
         answer: fallbackAnswer,
+        reply: fallbackAnswer,
+        response: fallbackAnswer,
+        text: fallbackAnswer,
+        content: fallbackAnswer,
         intent,
+        dateContext: date,
         source: 'free-template',
       });
     }
@@ -1886,7 +2342,12 @@ router.post('/pro/job-assistant', async (req, res) => {
       return res.json({
         ok: true,
         answer,
+        reply: answer,
+        response: answer,
+        text: answer,
+        content: answer,
         intent,
+        dateContext: date,
         source: 'deepseek-api',
       });
     } catch (e) {
@@ -1895,21 +2356,39 @@ router.post('/pro/job-assistant', async (req, res) => {
       return res.json({
         ok: true,
         answer: fallbackAnswer,
+        reply: fallbackAnswer,
+        response: fallbackAnswer,
+        text: fallbackAnswer,
+        content: fallbackAnswer,
         intent,
+        dateContext: date,
         source: 'fallback',
       });
     }
   } catch (err) {
     console.error('job-assistant error', err);
 
+    const answer =
+      'Direct answer:\nFaceMeX AI is temporarily unavailable.\n\nAction plan:\n1. Try again shortly.\n2. Check your internet connection.\n3. If you are applying for a job, use the saved email and message templates.\n\nCopy-ready message:\nGood day. I am interested in this opportunity. Please may you advise the correct application process?\n\nSafety check:\nDo not pay for jobs or send sensitive documents before verifying the opportunity.';
+
     return res.json({
       ok: true,
-      answer:
-        'Direct answer:\nFaceMeX AI is temporarily unavailable.\n\nAction plan:\n1. Try again shortly.\n2. Check your internet connection.\n3. If you are applying for a job, use the saved email and message templates.\n\nCopy-ready message:\nGood day. I am interested in this opportunity. Please may you advise the correct application process?\n\nSafety check:\nDo not pay for jobs or send sensitive documents before verifying the opportunity.',
+      answer,
+      reply: answer,
+      response: answer,
+      text: answer,
+      content: answer,
       source: 'error-fallback',
     });
   }
-});
+}
+
+router.post('/pro/job-assistant', handleCareerWorkspace);
+router.post('/job-assistant', handleCareerWorkspace);
+router.post('/workspace', handleCareerWorkspace);
+router.post('/career-workspace', handleCareerWorkspace);
+router.post('/ask', handleCareerWorkspace);
+router.post('/chat', handleCareerWorkspace);
 
 /* ---------------------------------------------
    TRANSLATE
