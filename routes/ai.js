@@ -3,35 +3,24 @@ import OpenAI from 'openai';
 
 const router = Router();
 
+const useLocalAi = false;
+
 /* ---------------------------------------------
    BASIC HELPERS
 --------------------------------------------- */
-
-const useLocalAi = false;
 
 function clean(value) {
   return String(value || '').trim();
 }
 
+function stripMarkdownSymbols(text = '') {
+  return String(text || '')
+    .replace(/```/g, '')
+    .trim();
+}
+
 function getAiText(out) {
   return clean(out?.choices?.[0]?.message?.content || '');
-}
-
-function normalizeUserPromptText(text = '') {
-  const raw = clean(text);
-
-  if (!raw.includes('USER QUESTION:')) return raw;
-
-  const parts = raw.split('USER QUESTION:');
-  return clean(parts[parts.length - 1]);
-}
-
-function toBoolean(value) {
-  if (value === true) return true;
-  if (value === false) return false;
-
-  const v = String(value || '').trim().toLowerCase();
-  return v === 'true' || v === '1' || v === 'yes' || v === 'on';
 }
 
 function isCreatorTier(tier, creatorPlus) {
@@ -50,9 +39,14 @@ function isProTier(tier) {
   return String(tier || '').toLowerCase() === 'pro';
 }
 
-/* ---------------------------------------------
-   DATE HELPERS
---------------------------------------------- */
+function toBoolean(value) {
+  if (value === true) return true;
+  if (value === false) return false;
+
+  const v = String(value || '').trim().toLowerCase();
+
+  return v === 'true' || v === '1' || v === 'yes' || v === 'on';
+}
 
 function getSouthAfricaDateContext() {
   const now = new Date();
@@ -92,19 +86,13 @@ function getSouthAfricaDateContext() {
   };
 }
 
-function isDatePrompt(text = '') {
-  const t = clean(text).toLowerCase();
+function normalizeUserPromptText(text = '') {
+  const raw = clean(text);
 
-  return (
-    t === 'date' ||
-    t === 'today' ||
-    t === 'today date' ||
-    t === 'what is today' ||
-    t === 'what is today?' ||
-    t === "what is today's date" ||
-    t === "what is today's date?" ||
-    /\b(today'?s date|current date|date today|what date is it|what is the date|what's the date)\b/i.test(t)
-  );
+  if (!raw.includes('USER QUESTION:')) return raw;
+
+  const parts = raw.split('USER QUESTION:');
+  return clean(parts[parts.length - 1]);
 }
 
 /* ---------------------------------------------
@@ -128,8 +116,8 @@ async function callDeepseekChat(payload) {
   return client.chat.completions.create({
     model: model || process.env.DEEPSEEK_MODEL || 'deepseek-chat',
     messages,
-    temperature: 0.45,
-    max_tokens: 1800,
+    temperature: 0.35,
+    max_tokens: 1600,
     ...rest,
   });
 }
@@ -155,52 +143,295 @@ async function callLlamaChat(payload) {
     temperature:
       typeof process.env.LLAMA_TEMPERATURE !== 'undefined'
         ? Number(process.env.LLAMA_TEMPERATURE)
-        : 0.7,
+        : 0.8,
     max_tokens:
       typeof process.env.LLAMA_MAX_TOKENS !== 'undefined'
         ? Number(process.env.LLAMA_MAX_TOKENS)
-        : 900,
+        : 512,
     ...rest,
   });
 }
 
-/* ---------------------------------------------
-   INTENT HELPERS
---------------------------------------------- */
+async function callVisionChat({ userPrompt, images, postContext = '' }) {
+  const apiKey = process.env.OPENAI_VISION_API_KEY || process.env.OPENAI_API_KEY;
 
-function isUnsafePrompt(text = '') {
-  const t = clean(text).toLowerCase();
+  if (!apiKey) {
+    return {
+      ok: false,
+      text:
+        'I received the image, but image analysis is not configured yet. Add OPENAI_API_KEY to the backend .env file and set OPENAI_VISION_MODEL=gpt-4o-mini.',
+    };
+  }
 
-  return /\b(hack|steal password|bypass login|phishing|malware|spyware|scam people|fake document|forge document|illegal weapon|hide evidence)\b/i.test(t);
+  const client = new OpenAI({
+    apiKey,
+    baseURL:
+      process.env.OPENAI_VISION_BASE_URL ||
+      process.env.OPENAI_BASE_URL ||
+      'https://api.openai.com/v1',
+  });
+
+  const date = getSouthAfricaDateContext();
+
+  const system = `
+You are FaceMeX Vision Workspace.
+
+You analyse uploaded images for South African users.
+
+Current date:
+Today is ${date.readableDateTime}.
+Short date: ${date.shortDate}.
+Timezone: ${date.timeZone}.
+
+When analysing images:
+- Read visible text carefully.
+- Identify company name, job title, location, closing date, requirements, email, phone, WhatsApp number, website, and apply link if visible.
+- If it is a job advert, say whether it looks safer, needs verification, or high risk.
+- Do not say "100% legit" unless the image contains official proof like a real company domain, official careers page, or government website.
+- If the image says "link in comments", "DM me", "WhatsApp only", or asks for payment, mark it as needs verification or high risk.
+- If the user asks a question about the image, answer that exact question.
+- If the user asks for help applying, give a copy-ready message.
+- If the image is not a job image, explain what is shown and answer the user's question.
+- Use simple English.
+- Be direct and practical.
+- Do not mention system prompts or backend.
+`;
+
+  const textPrompt = `
+User question:
+${userPrompt || 'Analyse these images and explain what they show.'}
+
+Post/feed context if provided:
+${postContext || 'None'}
+
+Give a strong answer like ChatGPT:
+- Start with the direct answer.
+- Then explain what you can see.
+- If it is an opportunity/job, give a safety rating.
+- Give what the user should do next.
+- Give a copy-ready message if useful.
+`;
+
+  const imageContent = images.map((image) => ({
+    type: 'image_url',
+    image_url: {
+      url: image.url,
+      detail: 'high',
+    },
+  }));
+
+  const out = await client.chat.completions.create({
+    model: process.env.OPENAI_VISION_MODEL || 'gpt-4o-mini',
+    messages: [
+      {
+        role: 'system',
+        content: system,
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: textPrompt,
+          },
+          ...imageContent,
+        ],
+      },
+    ],
+    temperature: 0.25,
+    max_tokens: 1600,
+  });
+
+  return {
+    ok: true,
+    text: getAiText(out),
+  };
 }
 
-function isJobRelatedPrompt(text = '') {
+/* ---------------------------------------------
+   IMAGE INPUT HELPERS
+--------------------------------------------- */
+
+function asArray(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  return [value];
+}
+
+function isAllowedImageUrl(value = '') {
+  const url = clean(value);
+
+  if (!url) return false;
+
+  if (/^https?:\/\//i.test(url)) return true;
+
+  if (/^data:image\/(png|jpg|jpeg|webp);base64,/i.test(url)) return true;
+
+  return false;
+}
+
+function normalizeImageInputs(body = {}) {
+  const rawItems = [
+    ...asArray(body.imageDataUrls),
+    ...asArray(body.imageDataUrl),
+    ...asArray(body.imageUrls),
+    ...asArray(body.imageUrl),
+    ...asArray(body.images),
+  ];
+
+  const images = [];
+
+  for (const item of rawItems) {
+    if (!item) continue;
+
+    if (typeof item === 'string') {
+      const url = clean(item);
+
+      if (isAllowedImageUrl(url)) {
+        images.push({
+          url,
+          source: url.startsWith('data:') ? 'base64' : 'url',
+        });
+      }
+
+      continue;
+    }
+
+    if (typeof item === 'object') {
+      const url =
+        item.dataUrl ||
+        item.imageDataUrl ||
+        item.url ||
+        item.src ||
+        item.preview ||
+        item.imageUrl ||
+        '';
+
+      if (isAllowedImageUrl(url)) {
+        images.push({
+          url: clean(url),
+          source: String(url).startsWith('data:') ? 'base64' : 'url',
+          name: item.name || item.filename || '',
+        });
+      }
+    }
+  }
+
+  return images.slice(0, 4);
+}
+
+/* ---------------------------------------------
+   INTENT DETECTION
+--------------------------------------------- */
+
+function isDatePrompt(text = '') {
   const t = clean(text).toLowerCase();
 
-  return /\b(job|jobs|work|hiring|vacancy|vacancies|career|careers|apply|application|learnership|internship|graduate|employment|opportunity|opportunities|interview|cv|resume|cover letter|looking for work|looking for job|find me a job|available jobs)\b/i.test(t);
+  return (
+    t === 'date' ||
+    t === 'today' ||
+    t === 'what is today' ||
+    t === 'what is today?' ||
+    t === "what is today's date" ||
+    t === "what is today's date?" ||
+    /\b(today'?s date|today date|current date|date today|what date is it|what is the date|what's the date)\b/i.test(
+      t
+    )
+  );
+}
+
+function isBusinessPrompt(text = '') {
+  const t = clean(text).toLowerCase();
+
+  return /\b(start my own|start a business|my own business|business plan|logistics business|delivery business|courier business|transport business|make money|customers|pricing|profit|scale|marketing|business strategy|company growth|startup)\b/i.test(
+    t
+  );
 }
 
 function isCompanyVerificationPrompt(text = '') {
   const t = clean(text).toLowerCase();
 
-  return /\b(is .* hiring|are .* hiring|is .* legit|is .* real|is .* fake|verify|scam|legit|can i trust|should i apply|job post|apply link|link in comments|whatsapp job|facebook job|telegram job)\b/i.test(t);
+  if (/\b(where can i start|start my own|business|logistics business)\b/i.test(t)) {
+    return false;
+  }
+
+  return /\b(is .* hiring|are .* hiring|hiring\?|is this legit|is it legit|legit|scam|fake|real or fake|verify|safe|risky|should i apply|can i trust|company hiring|cartrack|car track|sasol|rcl foods|pedros|shoprite|pick n pay|westfalia|zz2)\b/i.test(
+    t
+  );
 }
 
-function isBusinessStartupPrompt(text = '') {
+function isPostSafetyPrompt(text = '') {
   const t = clean(text).toLowerCase();
 
-  return /\b(start my own|start a business|my own business|own logistics|logistics business|delivery business|courier business|transport business|business in|business around|make money|customers|pricing|launch|startup|side hustle|hustle)\b/i.test(t);
+  return /\b(this post|job post|screenshot|poster|advert|apply link|link in comments|comments below|dm me|inbox me|whatsapp only|pay|fee|registration fee|training fee|admin fee|processing fee|uniform fee)\b/i.test(
+    t
+  );
 }
 
-function detectMainIntent(text = '', postContext = '') {
-  const t = clean(`${text}\n${postContext}`).toLowerCase();
+function isJobSearchPrompt(text = '') {
+  const t = clean(text).toLowerCase();
 
+  if (isBusinessPrompt(t)) return false;
+
+  return /\b(job|jobs|work|hiring|vacancy|vacancies|career|careers|apply|application|learnership|internship|graduate|employment|opportunity|opportunities|looking for a job|looking for job|looking for work|find me a job|find jobs|available job|available jobs|job around|jobs around|job in|jobs in|work around|work in)\b/i.test(
+    t
+  );
+}
+
+function isMisusePrompt(text = '') {
+  const t = clean(text).toLowerCase();
+
+  return /\b(hack|steal|bypass|phishing|crack password|malware|spyware|scam people|fake document|forge document|illegal|harm someone|hide evidence)\b/i.test(
+    t
+  );
+}
+
+function detectWorkspaceIntent(text = '', hasImages = false, postContext = '') {
+  const t = clean(text).toLowerCase();
+
+  if (hasImages) return 'image-analysis';
   if (isDatePrompt(t)) return 'date';
-  if (isUnsafePrompt(t)) return 'unsafe';
+  if (isMisusePrompt(t)) return 'unsafe';
   if (isCompanyVerificationPrompt(t)) return 'company-verification';
-  if (postContext) return 'post-analysis';
-  if (isBusinessStartupPrompt(t)) return 'business-startup';
-  if (isJobRelatedPrompt(t)) return 'career';
+  if (isPostSafetyPrompt(t) || postContext) return 'post-safety';
+  if (isBusinessPrompt(t)) return 'business-strategy';
+
+  const wantsBothEmailAndWhatsapp =
+    /(email|mail|send cv|send my cv|application email|cover letter)/i.test(t) &&
+    /(whatsapp|message|dm|sms|text)/i.test(t);
+
+  if (wantsBothEmailAndWhatsapp) return 'email-and-message';
+
+  if (
+    /(investor|investors|funding|funder|funders|grant|grants|venture|angel|vc|raise capital|capital|pitch|partnership|networking|accelerator|incubator)/i.test(
+      t
+    )
+  ) {
+    return 'investors-and-networking';
+  }
+
+  if (/(email|mail|cover letter|application email|send cv|send my cv|email cv)/i.test(t)) {
+    return 'email-application';
+  }
+
+  if (/(whatsapp|message|dm|sms|text|apply message)/i.test(t)) {
+    return 'message-application';
+  }
+
+  if (/(interview|tell me about yourself|questions|prepare|hiring manager)/i.test(t)) {
+    return 'interview-prep';
+  }
+
+  if (/(cv|resume|profile|linkedin|headline|summary|ats)/i.test(t)) {
+    return 'cv-profile';
+  }
+
+  if (isJobSearchPrompt(t)) return 'job-search';
+
+  if (/(research|find out|company|market|industry|business idea|analyse|analyze)/i.test(t)) {
+    return 'research';
+  }
+
   return 'general';
 }
 
@@ -221,7 +452,7 @@ function extractUserTextFromBody(body = {}) {
     '';
 
   if (typeof direct === 'string' && direct.trim()) {
-    return normalizeUserPromptText(direct);
+    return direct.trim();
   }
 
   if (Array.isArray(body.messages)) {
@@ -230,7 +461,7 @@ function extractUserTextFromBody(body = {}) {
       .find((msg) => msg?.role === 'user' && typeof msg?.content === 'string');
 
     if (lastUserMessage?.content) {
-      return normalizeUserPromptText(lastUserMessage.content);
+      return lastUserMessage.content.trim();
     }
   }
 
@@ -252,18 +483,22 @@ function extractPostContextFromBody(body = {}) {
     '';
 
   if (typeof possible === 'string') {
-    return clean(possible);
+    return possible.trim();
   }
 
   if (possible && typeof possible === 'object') {
     const parts = [
-      possible.authorName || possible.userName,
-      possible.content || possible.text || possible.caption,
-      possible.title,
+      possible.content,
+      possible.text,
+      possible.caption,
       possible.description,
+      possible.title,
+      possible.authorName,
+      possible.userName,
       possible.company,
       possible.location,
-      possible.link || possible.url,
+      possible.link,
+      possible.url,
       possible.createdAt,
     ]
       .filter(Boolean)
@@ -289,6 +524,10 @@ Date: ${post?.createdAt || ''}`;
 
   return '';
 }
+
+/* ---------------------------------------------
+   JOB / LINK HELPERS
+--------------------------------------------- */
 
 function extractLocation(text = '') {
   const t = clean(text).toLowerCase();
@@ -328,46 +567,6 @@ function extractLocation(text = '') {
     .join(' ');
 }
 
-function extractCompanyName(text = '') {
-  const raw = clean(text);
-  const lower = raw.toLowerCase();
-
-  let match =
-    raw.match(/(?:is|are)\s+(.+?)\s+hiring/i) ||
-    raw.match(/(.+?)\s+(?:is|are)\s+hiring/i) ||
-    raw.match(/is\s+(.+?)\s+legit/i) ||
-    raw.match(/verify\s+(.+)/i);
-
-  if (match?.[1]) {
-    return clean(match[1])
-      .replace(/\?+$/g, '')
-      .replace(/\b(in|around|near)\s+(tzaneen|limpopo|gauteng|south africa)\b/gi, '')
-      .trim();
-  }
-
-  const known = [
-    'cartrack',
-    'car track',
-    'rcl foods',
-    'westfalia',
-    'pedros',
-    'sasol',
-    'shoprite',
-    'pick n pay',
-    'boxer',
-    'cashbuild',
-    'pep',
-    'ackermans',
-    'motus',
-    'sanral',
-    'department of labour',
-    'greater tzaneen municipality',
-  ];
-
-  const found = known.find((name) => lower.includes(name));
-  return found ? found : '';
-}
-
 function extractJobType(text = '') {
   const t = clean(text).toLowerCase();
 
@@ -403,9 +602,6 @@ function extractJobType(text = '') {
     'griller',
     'packer',
     'merchandiser',
-    'logistics',
-    'delivery',
-    'courier',
   ];
 
   const found = jobTypes.find((job) => t.includes(job));
@@ -424,83 +620,125 @@ function makeSearchUrl(base, params) {
   return url.toString();
 }
 
-function buildUsefulLinks(userText = '', postContext = '') {
-  const allText = clean(`${userText}\n${postContext}`);
-  const location = extractLocation(allText);
-  const jobType = extractJobType(allText);
-  const company = extractCompanyName(allText);
+function buildClickableJobLinks(userText = '') {
+  const location = extractLocation(userText);
+  const jobType = extractJobType(userText);
+  const query = `${jobType} ${location}`;
 
-  const links = [];
+  return [
+    {
+      name: 'Indeed',
+      label: `Indeed ${location} jobs`,
+      url: makeSearchUrl('https://za.indeed.com/jobs', {
+        q: query,
+        l: location,
+      }),
+      note: 'Good for general workers, admin, retail, cleaning, drivers, restaurants, and entry-level jobs.',
+    },
+    {
+      name: 'LinkedIn',
+      label: `LinkedIn ${location} jobs`,
+      url: makeSearchUrl('https://www.linkedin.com/jobs/search/', {
+        keywords: query,
+        location,
+      }),
+      note: 'Good for company-posted jobs, admin, office, sales, professional and retail roles.',
+    },
+    {
+      name: 'PNet',
+      label: 'PNet South Africa jobs',
+      url: 'https://www.pnet.co.za/jobs',
+      note: 'Search your job title and location inside the site.',
+    },
+    {
+      name: 'Careers24',
+      label: 'Careers24 jobs',
+      url: 'https://www.careers24.com/jobs/',
+      note: 'Useful for South African vacancies across many industries.',
+    },
+    {
+      name: 'CareerJunction',
+      label: 'CareerJunction jobs',
+      url: 'https://www.careerjunction.co.za/jobs',
+      note: 'Good for admin, sales, finance, office, IT, and skilled roles.',
+    },
+    {
+      name: 'DPSA',
+      label: 'DPSA government vacancies',
+      url: 'https://www.dpsa.gov.za/newsroom/psvc/',
+      note: 'Official South African government vacancy circulars.',
+    },
+    {
+      name: 'SAYouth',
+      label: 'SAYouth opportunities',
+      url: 'https://sayouth.mobi/',
+      note: 'Good for youth opportunities, learning programmes, entry-level work, and support.',
+    },
+    {
+      name: 'ESSA',
+      label: 'ESSA Department of Employment and Labour',
+      url: 'https://essa.labour.gov.za/EssaOnline/WebBeans/',
+      note: 'Official employment services platform from the Department of Employment and Labour.',
+    },
+  ];
+}
 
-  if (company) {
-    links.push({
-      label: `${company} official careers search`,
+function buildCompanySearchLinks(userText = '') {
+  const location = extractLocation(userText);
+  const cleaned = clean(userText)
+    .replace(/\?/g, '')
+    .replace(/\bis\b/gi, '')
+    .replace(/\bare\b/gi, '')
+    .replace(/\bhiring\b/gi, '')
+    .replace(/\bvacancy\b/gi, '')
+    .replace(/\bvacancies\b/gi, '')
+    .replace(/\bjobs\b/gi, '')
+    .replace(/\bjob\b/gi, '')
+    .replace(/\bin\b/gi, '')
+    .replace(/\baround\b/gi, '')
+    .replace(new RegExp(location, 'gi'), '')
+    .trim();
+
+  const company = cleaned || 'the company';
+
+  return [
+    {
+      name: 'Official careers search',
+      label: `${company} official careers`,
       url: makeSearchUrl('https://www.google.com/search', {
         q: `${company} official careers ${location}`,
       }),
-    });
-
-    links.push({
+      note: 'Use this to find the real company careers page.',
+    },
+    {
+      name: 'Company LinkedIn search',
       label: `${company} LinkedIn jobs`,
-      url: makeSearchUrl('https://www.linkedin.com/jobs/search/', {
-        keywords: company,
-        location,
+      url: makeSearchUrl('https://www.google.com/search', {
+        q: `${company} LinkedIn jobs ${location}`,
       }),
-    });
-  }
-
-  links.push({
-    label: `Indeed ${location} jobs`,
-    url: makeSearchUrl('https://za.indeed.com/jobs', {
-      q: `${jobType} ${location}`,
-      l: location,
-    }),
-  });
-
-  links.push({
-    label: `LinkedIn ${location} jobs`,
-    url: makeSearchUrl('https://www.linkedin.com/jobs/search/', {
-      keywords: `${jobType} ${location}`,
-      location,
-    }),
-  });
-
-  links.push({
-    label: 'PNet South Africa jobs',
-    url: 'https://www.pnet.co.za/jobs',
-  });
-
-  links.push({
-    label: 'Careers24 jobs',
-    url: 'https://www.careers24.com/jobs/',
-  });
-
-  links.push({
-    label: 'DPSA government vacancies',
-    url: 'https://www.dpsa.gov.za/newsroom/psvc/',
-  });
-
-  links.push({
-    label: 'SAYouth opportunities',
-    url: 'https://sayouth.mobi/',
-  });
-
-  links.push({
-    label: 'ESSA Department of Employment and Labour',
-    url: 'https://essa.labour.gov.za/EssaOnline/WebBeans/',
-  });
-
-  return links;
+      note: 'Use this to check company-posted jobs and staff pages.',
+    },
+    {
+      name: 'Scam check search',
+      label: `${company} scam check`,
+      url: makeSearchUrl('https://www.google.com/search', {
+        q: `${company} job scam South Africa`,
+      }),
+      note: 'Use this to check reports, complaints, and suspicious posts.',
+    },
+  ];
 }
 
-function buildLinksMarkdown(links = []) {
+function linksToMarkdown(links = []) {
   return links
-    .map((link, index) => `${index + 1}. [${link.label}](${link.url})`)
-    .join('\n');
+    .map((item, index) => {
+      return `${index + 1}. [${item.label}](${item.url})\n${item.note || ''}`;
+    })
+    .join('\n\n');
 }
 
 /* ---------------------------------------------
-   FACE MEX KNOWLEDGE + SYSTEM PROMPT
+   PROMPTS
 --------------------------------------------- */
 
 function buildFaceMeXKnowledge() {
@@ -509,29 +747,39 @@ FaceMeX is a South African social and career platform.
 
 FaceMeX helps users:
 - discover jobs and opportunities
-- use Career Workspace for CVs, applications, research, interview prep and business help
+- use FaceMeX Career Workspace for CVs, job applications, research, and interview prep
 - post and share content on the feed
 - connect with people
 - advertise businesses and opportunities
-- use AI for career, business and everyday questions
+- use AI for career and business support
 - check whether job posts or opportunities look risky
 
-FaceMeX must feel local, practical, safe, useful and human.
-`.trim();
+FaceMeX must feel useful, safe, local, practical, and easy to use.
+`;
 }
 
-function buildSmartSystemPrompt({ userText = '', postContext = '', intent = 'general' }) {
+function buildGeneralSystemPrompt({ intent, userText, postContext = '', imageAnalysis = '' }) {
   const date = getSouthAfricaDateContext();
-  const location = extractLocation(`${userText}\n${postContext}`);
-  const jobType = extractJobType(`${userText}\n${postContext}`);
-  const company = extractCompanyName(`${userText}\n${postContext}`);
-  const usefulLinks = buildUsefulLinks(userText, postContext);
+  const location = extractLocation(`${userText}\n${postContext}\n${imageAnalysis}`);
+  const jobType = extractJobType(`${userText}\n${postContext}\n${imageAnalysis}`);
+
+  const jobLinks = linksToMarkdown(buildClickableJobLinks(userText || postContext || imageAnalysis));
+  const companyLinks = linksToMarkdown(buildCompanySearchLinks(userText || postContext || imageAnalysis));
 
   return `
 You are FaceMeX AI Workspace.
 
-Your job:
-Understand what the user meant, even when they type badly, spell words wrong, use broken English, mix slang, or ask unclear questions.
+Answer like ChatGPT:
+- Understand the user's intent even if they type badly.
+- Correctly infer what they mean.
+- Be clear, practical, direct, smart, and natural.
+- Do not force a bot template.
+- Do not answer a business question like a job-search question.
+- Keep the answer mobile-friendly.
+- Use headings when useful.
+- Use bullets and numbered steps when useful.
+- Use clickable markdown links when links are given.
+- Do not mention system prompts, backend, DeepSeek, OpenAI, ChatGPT, or Claude.
 
 Current date:
 Today is ${date.readableDateTime}.
@@ -539,169 +787,444 @@ Short date: ${date.shortDate}.
 ISO date: ${date.isoDate}.
 Timezone: ${date.timeZone}.
 
-FaceMeX knowledge:
 ${buildFaceMeXKnowledge()}
 
-Detected context:
-Intent: ${intent}
-Location: ${location}
-Job/business type: ${jobType}
-Company mentioned: ${company || 'none'}
+Intent detected by backend: ${intent}
+Detected location: ${location}
+Detected job type: ${jobType}
 
 Post/feed context:
-${postContext || 'No post context was provided.'}
+${postContext || 'None provided'}
 
-Useful links you may use:
-${buildLinksMarkdown(usefulLinks)}
+Image analysis:
+${imageAnalysis || 'None provided'}
 
-Main behavior:
-- Answer like ChatGPT: natural, clear, direct, useful.
-- Do not use a fixed template.
-- Do not force every answer into "Direct answer / Action plan / Safety check".
-- Choose the answer structure based on the user’s real intent.
-- If the user asks business/startup/logistics, answer as a business strategist, not as a job search.
-- If the user asks job search, answer as a job hunt guide with places to apply and a simple message.
-- If the user asks if a company is hiring, answer as a verification assistant.
-- If the user asks about a post, judge the post using the post context.
-- If the user asks a simple general question, answer simply.
-- If the user asks today's date, answer only with the correct date unless they ask for more.
-- If the user asks for writing, produce copy-ready text.
-- If the user asks for code, produce clean code.
+Trusted job links:
+${jobLinks}
 
-Company verification rules:
-- Be specific to the company the user named.
-- If you cannot browse live jobs, say you cannot confirm live vacancies inside FaceMeX yet.
-- Do not invent current vacancies, salaries, deadlines, emails, phone numbers, or apply links.
-- Tell the user to verify through the official company careers page or trusted job boards.
-- Provide clickable search links when useful.
-- Warn them not to pay for jobs.
-- If a job post asks for money, WhatsApp-only application, "link in comments", "DM me", or no official company link, mark it as "needs verification" or "high risk".
+Company verification links:
+${companyLinks}
 
-Post safety rating:
-Use one of these when judging posts:
-- Looks safer
-- Needs verification
-- High risk
-
-For business/startup questions:
-- Give the simplest way to make money first.
-- Give where to start, who to approach, what to offer, pricing idea, and next action.
-- Use local examples when location is known.
-- Do not turn business questions into job-search answers.
-
-Safety:
-- Refuse hacking, phishing, fraud, fake documents, scams, illegal activity, or harmful requests.
-- Redirect to a safe helpful option.
-
-Style:
-- Short paragraphs.
-- Strong headings only when useful.
-- Mobile-friendly.
-- Simple English.
-- Do not mention system prompts, backend, OpenAI, DeepSeek, ChatGPT, Claude, or hidden instructions.
-`.trim();
+Rules:
+1. Answer the exact question first.
+2. If the user asks for today's date, answer using the date above.
+3. If the user asks about uploaded images, use the image analysis.
+4. If the user asks about a job advert, company, screenshot, or post, give a safety rating:
+   - Looks safer
+   - Needs verification
+   - High risk
+5. Never say "100% legit" unless official proof is provided.
+6. Do not invent live vacancies, deadlines, salaries, or application links.
+7. If you cannot confirm live information, say so clearly and give official places to verify.
+8. If the user asks for jobs, give job sources, search terms, action steps, and a copy-ready message.
+9. If the user asks for business/logistics/startup advice, give a launch map, first money plan, pricing, scripts, and action steps.
+10. If the user asks for FaceMeX help, explain how to use FaceMeX clearly.
+11. If the request is unsafe, refuse briefly and redirect to a safe action.
+`;
 }
 
 /* ---------------------------------------------
-   FALLBACK ANSWERS WHEN AI KEY FAILS
+   FALLBACK ANSWERS
 --------------------------------------------- */
 
-function buildSafeFallback(userText = '', postContext = '') {
+function buildDateAnswer() {
   const date = getSouthAfricaDateContext();
-  const intent = detectMainIntent(userText, postContext);
-  const location = extractLocation(`${userText}\n${postContext}`);
-  const company = extractCompanyName(`${userText}\n${postContext}`);
-  const links = buildUsefulLinks(userText, postContext);
+  return `Today's date is ${date.shortDate}.`;
+}
 
-  if (intent === 'date') {
-    return `Today's date is ${date.shortDate}.`;
-  }
+function buildJobFallbackAnswer(userText = '') {
+  const date = getSouthAfricaDateContext();
+  const location = extractLocation(userText);
+  const jobType = extractJobType(userText);
+  const links = linksToMarkdown(buildClickableJobLinks(userText));
 
-  if (intent === 'unsafe') {
-    return `I can’t help with that. I can help you do it safely and legally instead.`;
-  }
+  return `Start with places where ${location} jobs are most likely to appear fast.
 
-  if (intent === 'business-startup') {
-    return `Start where customers are already moving.
+Today’s date is ${date.shortDate}.
 
-For logistics in ${location}, start small before thinking about trucks or offices.
+## 1. Online job sites — check every morning
 
-Best place to start:
-1. Shops and fast food places
-2. Pharmacies and clinics
-3. Tzaneen CBD and malls
-4. Spaza shops
+Use these first because companies post there often:
+
+${links}
+
+## 2. Search these words
+
+Use these exact searches:
+
+- "${jobType} ${location}"
+- "general worker ${location}"
+- "admin clerk ${location}"
+- "cleaner ${location}"
+- "driver jobs ${location}"
+- "retail jobs ${location}"
+- "learnership ${location}"
+
+## 3. Apply directly to local employers
+
+Check shops, malls, fast food places, farms, packhouses, car dealerships, pharmacies, clinics, and local businesses around ${location}.
+
+## Simple message to send
+
+Good day, my name is [Your Name]. I am looking for employment in ${location}. I am hardworking, reliable, willing to learn, and available immediately. Please may I ask if you are hiring or accepting CVs?
+
+## Important warning
+
+Do not pay anyone for a job application. Real companies do not ask for application fees, training fees, or money to secure an interview.`;
+}
+
+function buildBusinessFallbackAnswer(userText = '') {
+  const location = extractLocation(userText);
+
+  return `Start your business where customers already move every day, not where rent is cheap.
+
+## Best place to start in ${location}
+
+Start with the busiest pickup and delivery zones:
+
+1. ${location} CBD
+2. Shopping centres
+3. Fast food outlets
+4. Pharmacies and clinics
 5. Laundry shops
-6. Small businesses that need parcels delivered
+6. Phone repair shops
+7. Spaza shops
+8. Offices and small businesses
 
-First offer:
-“I collect and deliver food, parcels, groceries, documents and small business orders around ${location}.”
+## Simplest version that can make money today
 
-Simple pricing:
-- Short local delivery: R30–R50
-- Medium distance: R60–R90
-- Urgent delivery: add R30–R50
-- Waiting after 10 minutes: add R30
+Do not start with trucks. Start with small logistics:
 
-Message to send:
-Good day. I’m starting a local delivery service around ${location}. I can collect and deliver food, parcels, groceries and business orders. Please let me know if your business needs reliable local deliveries.
+Service offer:
+“We collect and deliver food, parcels, groceries, documents, and business orders around ${location}.”
 
-Today’s action:
-Visit 10 businesses, send 30 WhatsApp messages, and try to get your first 3 paid deliveries.`;
+Start with these 5 services:
+
+1. Food collection from restaurants
+2. Parcel delivery from shops to customers
+3. CV/document drop-off
+4. Grocery pickup
+5. Pharmacy/clinic errands
+
+## Simple pricing formula
+
+Base price = fuel + driver time + company profit
+
+Easy starting prices:
+
+- 0–2 km: R30–R40
+- 3–5 km: R50–R70
+- 6–10 km: R80–R120
+- Urgent order: add R30–R50
+- Waiting longer than 10 minutes: add R30
+
+## Customer message
+
+Good day. I run a local delivery service around ${location}. We collect and deliver food, parcels, groceries, documents, and business orders. Same-day delivery is available. Can I send you our price list?
+
+## Tomorrow morning action plan
+
+1. Make a WhatsApp poster.
+2. Visit 10 shops.
+3. Visit 5 fast food places.
+4. Visit 3 pharmacies.
+5. Ask every business if they need collections or deliveries.
+6. Post in local Facebook and WhatsApp groups.
+7. Track every customer in a simple notebook or Google Sheet.
+
+Do not wait for everything to be perfect. Start small, collect cash flow, then build systems.`;
+}
+
+function buildCompanyVerificationFallback(userText = '') {
+  const companyLinks = linksToMarkdown(buildCompanySearchLinks(userText));
+
+  return `I can help you verify this, but I cannot confirm a live vacancy unless the official company page or post details are provided.
+
+## What to do first
+
+Check the company through official sources, not only WhatsApp, Facebook screenshots, or reposts.
+
+${companyLinks}
+
+## Safety rating
+
+Needs verification.
+
+It becomes safer if:
+- the job appears on the official company careers page
+- the email uses the company domain
+- the application link goes to the official company website
+- no one asks for money
+
+It becomes high risk if:
+- they ask for payment
+- they use Gmail/WhatsApp only
+- they hide the apply link
+- they say “link in comments”
+- they rush you
+- they ask for ID/bank details too early
+
+## Message to send
+
+Good day. I saw a vacancy/post linked to your company. Please may you confirm if this opportunity is official and where I can apply through the correct company channel?
+
+## Important
+
+Never pay for a job application.`;
+}
+
+function buildImageNoConfigAnswer() {
+  return `I received the image, but FaceMeX backend cannot truly analyse images yet because the vision API key is not configured.
+
+## Fix this
+
+Add this to your backend .env:
+
+OPENAI_API_KEY=your_openai_key_here
+OPENAI_VISION_MODEL=gpt-4o-mini
+
+Then redeploy your backend.
+
+## Also update server.js
+
+Make sure your backend can receive image data:
+
+app.use(express.json({ limit: '30mb' }));
+
+After that, FaceMeX Workspace will be able to read job posters, screenshots, adverts, documents, and images.`;
+}
+
+function buildUnsafeAnswer() {
+  return `I can’t help with that request.
+
+I can help you do it safely instead — for example, checking whether a job post is real, protecting your account, reporting a scam, or writing a proper message to a company.`;
+}
+
+/* ---------------------------------------------
+   CV TEMPLATE HELPERS
+--------------------------------------------- */
+
+function titleCaseWords(text = '') {
+  return clean(text)
+    .toLowerCase()
+    .split(/\s+/)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
+function splitList(value = '') {
+  return clean(value)
+    .split(/[,;\n/]+/)
+    .map((item) => clean(item))
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
+function professionalizeSummary(summary = '') {
+  const raw = clean(summary);
+
+  if (!raw) {
+    return 'Reliable and motivated candidate with strong communication, teamwork, and customer service skills. Able to work under pressure, follow instructions, and complete tasks on time. Eager to contribute positively in a professional environment and grow through practical experience.';
   }
 
-  if (intent === 'company-verification' || intent === 'post-analysis') {
-    const companyLine = company ? ` for ${company}` : '';
+  const lower = raw.toLowerCase();
 
-    return `I can help you verify this${companyLine}.
-
-I can’t confirm live vacancies inside FaceMeX unless the official post, link, or company careers page is provided.
-
-What to check first:
-1. Is the job on the official company careers page?
-2. Does the email use the company domain?
-3. Is there a clear job title, location, closing date and job description?
-4. Are they asking for money? If yes, treat it as high risk.
-5. Are they saying “WhatsApp only”, “DM me”, or “link in comments”? Treat it as needing verification.
-
-Useful links:
-${buildLinksMarkdown(links)}
-
-Safe message to send:
-Good day. I saw a post about this opportunity. Please may you confirm the official job title, location, application link, closing date and official email address for applications?
-
-Important:
-Never pay anyone for a job application, training, uniform, interview slot or background check.`;
+  if (lower.includes('media') || lower.includes('team management')) {
+    return 'Motivated and detail-oriented professional with experience in media management, team coordination, customer service, and communication. Skilled at supporting daily operations, organising tasks, working with people, and contributing to a productive team environment.';
   }
 
-  if (intent === 'career') {
-    return `Start with trusted places where jobs are most likely to appear.
-
-Best places to check:
-${buildLinksMarkdown(links)}
-
-Search these words:
-- jobs ${location}
-- general worker ${location}
-- admin clerk ${location}
-- cleaner ${location}
-- driver jobs ${location}
-- learnership ${location}
-
-Message to send:
-Good day, my name is [Your Name]. I am looking for employment around ${location}. I am hardworking, reliable and available immediately. Please let me know if there are any current or upcoming vacancies.
-
-Do not pay anyone for a job application.`;
+  if (lower.includes('driver') || lower.includes('code 10') || lower.includes('code 14')) {
+    return 'Reliable and safety-conscious driver with strong route awareness, time management, and customer service skills. Able to follow instructions, handle responsibilities professionally, and complete deliveries or transport duties on time.';
   }
 
-  return `I understand. Here’s the best way to handle it:
+  return raw
+    .replace(/\bi\b/g, 'I')
+    .replace(/\bteam management\b/gi, 'team coordination')
+    .replace(/\benglish fluently\b/gi, 'English: Fluent')
+    .replace(/\bsepedi mothers? tangue\b/gi, 'Sepedi: Mother tongue')
+    .replace(/\bsepedi mothers? tongue\b/gi, 'Sepedi: Mother tongue')
+    .replace(/\bcode 10 drive\b/gi, 'Driver’s licence: Code 10')
+    .replace(/\bcode 14 drive\b/gi, 'Driver’s licence: Code 14');
+}
 
-Please give me one more detail so I can answer properly:
-1. What you want to achieve
-2. Where you are
-3. What you already tried
+function professionalizeSkills(skills = '') {
+  const items = splitList(skills);
 
-Then I’ll give you the exact next steps.`;
+  if (!items.length) {
+    return [
+      'Customer service and support',
+      'Team collaboration and communication',
+      'Time management and organisation',
+      'Problem solving',
+      'Computer literacy',
+      'Workplace discipline',
+    ];
+  }
+
+  return items.map((item) => {
+    const lower = item.toLowerCase();
+
+    if (lower.includes('team management')) return 'Team coordination and leadership';
+    if (lower.includes('customer')) return 'Customer service and support';
+    if (lower.includes('social media')) return 'Social media management';
+    if (lower.includes('media')) return 'Media management';
+    if (lower.includes('inventory')) return 'Inventory control';
+    if (lower.includes('stock')) return 'Stock management';
+    if (lower.includes('code 10')) return 'Driver’s licence: Code 10';
+    if (lower.includes('code 14')) return 'Driver’s licence: Code 14';
+    if (lower.includes('english')) return 'English communication';
+    if (lower.includes('sepedi')) return 'Sepedi communication';
+
+    return titleCaseWords(item);
+  });
+}
+
+function professionalizeExtras(extras = '') {
+  const raw = clean(extras);
+
+  const technicalSkills = [];
+  const languages = [];
+
+  if (!raw) {
+    return {
+      technicalSkills: ['MS Office', 'Basic computer literacy', 'Email communication'],
+      languages: ['English: Fluent', 'Sepedi: Mother tongue'],
+    };
+  }
+
+  const lower = raw.toLowerCase();
+
+  if (lower.includes('english')) languages.push('English: Fluent');
+  if (lower.includes('sepedi')) languages.push('Sepedi: Mother tongue');
+  if (lower.includes('zulu')) languages.push('Zulu: Conversational');
+  if (lower.includes('xitsonga') || lower.includes('tsonga')) languages.push('itsonga: Conversational');
+
+  if (lower.includes('computer')) technicalSkills.push('Basic computer literacy');
+  if (lower.includes('ms office') || lower.includes('word') || lower.includes('excel')) technicalSkills.push('MS Office');
+  if (lower.includes('social media')) technicalSkills.push('Social media management');
+  if (lower.includes('email')) technicalSkills.push('Email communication');
+
+  const licenceMatches = raw.match(/code\s*\d+/gi) || [];
+  for (const match of licenceMatches) {
+    technicalSkills.push(`Driver’s licence: ${match.replace(/\s+/g, ' ').toUpperCase()}`);
+  }
+
+  if (!technicalSkills.length) {
+    technicalSkills.push('Basic computer literacy');
+  }
+
+  if (!languages.length) {
+    languages.push('English: Fluent');
+  }
+
+  return {
+    technicalSkills: [...new Set(technicalSkills)].slice(0, 5),
+    languages: [...new Set(languages)].slice(0, 4),
+  };
+}
+
+function professionalizeExperience(experience = '') {
+  const raw = clean(experience);
+
+  if (!raw) {
+    return `[Job Title] | [Company Name] | [Year]
+- Supported daily workplace tasks and followed instructions from supervisors.
+- Assisted customers, team members, or management in a professional manner.
+- Completed assigned duties on time and maintained a reliable work ethic.`;
+  }
+
+  const lower = raw.toLowerCase();
+
+  if (lower.includes('ceo') && lower.includes('facemex')) {
+    return `CEO / Founder | FaceMeX | 2025 – Present
+- Built and managed a digital platform focused on social networking, career tools, and business opportunities.
+- Collected user feedback to improve features, mobile layout, and AI-powered tools.
+- Managed product testing, content planning, user support, and platform improvements.`;
+  }
+
+  if (lower.includes('driver') || lower.includes('truck')) {
+    return `Driver | [Company Name] | [Year]
+- Transported goods or passengers safely while following road and company rules.
+- Planned routes, managed time effectively, and completed trips or deliveries on schedule.
+- Communicated professionally with customers, team members, and supervisors.`;
+  }
+
+  if (!raw.includes('-')) {
+    return `${raw}
+- Supported daily tasks and contributed to smooth operations.
+- Communicated professionally with customers, colleagues, or supervisors.
+- Completed duties on time and showed reliability in the workplace.`;
+  }
+
+  return raw;
+}
+
+function professionalizeEducation(education = '') {
+  const raw = clean(education);
+
+  if (!raw) {
+    return '[School / College / Institution] | [Qualification] | [Year]';
+  }
+
+  return raw
+    .replace(/\bTVT\b/gi, 'TVET')
+    .replace(/\btvt\b/gi, 'TVET')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function buildClassicA4CvTemplate({
+  fullName = '',
+  email = '',
+  phone = '',
+  location = '',
+  idNumber = '',
+  showIdOnCv = false,
+  summary = '',
+  experience = '',
+  skills = '',
+  education = '',
+  extras = '',
+}) {
+  const name = clean(fullName) || '[YOUR NAME]';
+  const cleanEmail = clean(email) || 'your.email@example.com';
+  const cleanPhone = clean(phone) || '+27 00 000 0000';
+  const cleanLocation = clean(location) || 'Your City, South Africa';
+
+  const finalSummary = professionalizeSummary(summary);
+  const finalSkills = professionalizeSkills(skills);
+  const finalExperience = professionalizeExperience(experience);
+  const finalEducation = professionalizeEducation(education);
+  const extraData = professionalizeExtras(extras);
+
+  const profileLine =
+    showIdOnCv && clean(idNumber)
+      ? `Address: ${cleanLocation} | Contact: ${cleanPhone} | Email: ${cleanEmail} | Profile ID: ${clean(idNumber)}`
+      : `Address: ${cleanLocation} | Contact: ${cleanPhone} | Email: ${cleanEmail}`;
+
+  return `${name.toUpperCase()}
+${profileLine}
+
+PROFESSIONAL SUMMARY
+${finalSummary}
+
+CORE COMPETENCIES
+${finalSkills.map((item) => `- ${item}`).join('\n')}
+
+PROFESSIONAL EXPERIENCE
+${finalExperience}
+
+EDUCATION
+${finalEducation}
+
+TECHNICAL SKILLS
+${extraData.technicalSkills.map((item) => `- ${item}`).join('\n')}
+
+LANGUAGES
+${extraData.languages.map((item) => `- ${item}`).join('\n')}
+
+REFERENCES
+Available Upon Request`;
 }
 
 /* ---------------------------------------------
@@ -737,9 +1260,7 @@ async function captionImageWithHF({ imageUrl, imageDataUrl }) {
     throw new Error('HF_API_KEY missing');
   }
 
-  const model =
-    process.env.HF_IMAGE_CAPTION_MODEL ||
-    'Salesforce/blip-image-captioning-large';
+  const model = process.env.HF_IMAGE_CAPTION_MODEL || 'Salesforce/blip-image-captioning-large';
 
   let base64 = '';
   let mime = 'image/jpeg';
@@ -759,21 +1280,18 @@ async function captionImageWithHF({ imageUrl, imageDataUrl }) {
     throw new Error('No image provided');
   }
 
-  const resp = await fetch(
-    `https://api-inference.huggingface.co/models/${encodeURIComponent(model)}`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
+  const resp = await fetch(`https://api-inference.huggingface.co/models/${encodeURIComponent(model)}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      inputs: {
+        image: `data:${mime};base64,${base64}`,
       },
-      body: JSON.stringify({
-        inputs: {
-          image: `data:${mime};base64,${base64}`,
-        },
-      }),
-    }
-  );
+    }),
+  });
 
   const data = await resp.json().catch(() => null);
 
@@ -786,6 +1304,249 @@ async function captionImageWithHF({ imageUrl, imageDataUrl }) {
     : data?.generated_text || data?.caption || '';
 
   return clean(caption);
+}
+
+/* ---------------------------------------------
+   WORKSPACE HANDLER
+--------------------------------------------- */
+
+async function handleCareerWorkspace(req, res) {
+  try {
+    const {
+      prompt = '',
+      role = '',
+      location = '',
+      preferences = '',
+      experienceLevel = '',
+      industry = '',
+      workMode = '',
+      company = '',
+      contactPerson = '',
+      tier = 'free',
+      creatorPlus,
+    } = req.body || {};
+
+    const userPrompt = normalizeUserPromptText(
+      prompt ||
+        req.body?.message ||
+        req.body?.question ||
+        req.body?.input ||
+        req.body?.text ||
+        ''
+    );
+
+    const postContext = extractPostContextFromBody(req.body);
+    const images = normalizeImageInputs(req.body);
+    const hasImages = images.length > 0;
+    const intent = detectWorkspaceIntent(userPrompt, hasImages, postContext);
+    const date = getSouthAfricaDateContext();
+
+    if (!userPrompt && !hasImages && !postContext) {
+      return res.status(400).json({
+        ok: false,
+        answer: 'Please type what you need help with or upload an image.',
+      });
+    }
+
+    if (intent === 'unsafe') {
+      const answer = buildUnsafeAnswer();
+
+      return res.json({
+        ok: true,
+        answer,
+        reply: answer,
+        response: answer,
+        text: answer,
+        content: answer,
+        intent,
+        dateContext: date,
+        source: 'safe-refusal',
+      });
+    }
+
+    if (intent === 'date') {
+      const answer = buildDateAnswer();
+
+      return res.json({
+        ok: true,
+        answer,
+        reply: answer,
+        response: answer,
+        text: answer,
+        content: answer,
+        intent,
+        dateContext: date,
+        source: 'date-direct',
+      });
+    }
+
+    let imageAnalysis = '';
+
+    if (hasImages) {
+      const vision = await callVisionChat({
+        userPrompt,
+        images,
+        postContext,
+      });
+
+      if (!vision.ok) {
+        const answer = vision.text || buildImageNoConfigAnswer();
+
+        return res.json({
+          ok: true,
+          answer,
+          reply: answer,
+          response: answer,
+          text: answer,
+          content: answer,
+          intent: 'image-analysis',
+          dateContext: date,
+          imageCount: images.length,
+          source: 'vision-not-configured',
+        });
+      }
+
+      imageAnalysis = vision.text;
+    }
+
+    const canUseAi = true;
+
+    let fallbackAnswer = '';
+
+    if (intent === 'job-search') {
+      fallbackAnswer = buildJobFallbackAnswer(userPrompt);
+    } else if (intent === 'business-strategy') {
+      fallbackAnswer = buildBusinessFallbackAnswer(userPrompt);
+    } else if (intent === 'company-verification' || intent === 'post-safety') {
+      fallbackAnswer = buildCompanyVerificationFallback(userPrompt || postContext);
+    } else if (intent === 'image-analysis') {
+      fallbackAnswer = imageAnalysis || buildImageNoConfigAnswer();
+    } else {
+      fallbackAnswer = `I understand what you mean.
+
+Please give me one more detail so I can answer properly:
+- What result do you want?
+- Which location?
+- Is this about a job, business, CV, image, post, or company?
+
+Then I’ll give you a direct answer and next steps.`;
+    }
+
+    if (!canUseAi) {
+      return res.json({
+        ok: true,
+        answer: fallbackAnswer,
+        reply: fallbackAnswer,
+        response: fallbackAnswer,
+        text: fallbackAnswer,
+        content: fallbackAnswer,
+        intent,
+        dateContext: date,
+        links: buildClickableJobLinks(userPrompt || postContext || imageAnalysis),
+        source: 'fallback',
+      });
+    }
+
+    try {
+      const out = await callDeepseekChat({
+        messages: [
+          {
+            role: 'system',
+            content: buildGeneralSystemPrompt({
+              intent,
+              userText: userPrompt,
+              postContext,
+              imageAnalysis,
+            }),
+          },
+          {
+            role: 'user',
+            content: `
+User request:
+${userPrompt || 'The user uploaded images and needs help.'}
+
+Optional fields:
+Role: ${role || 'Not provided'}
+Location: ${location || 'Not provided'}
+Industry: ${industry || 'Not provided'}
+Work mode: ${workMode || 'Not provided'}
+Experience level: ${experienceLevel || 'Not provided'}
+Company: ${company || 'Not provided'}
+Contact person: ${contactPerson || 'Not provided'}
+Preferences: ${preferences || 'Not provided'}
+
+Post context:
+${postContext || 'None'}
+
+Image analysis:
+${imageAnalysis || 'None'}
+
+Now answer the user according to their real intent.
+`,
+          },
+        ],
+        temperature: 0.35,
+        max_tokens: 1800,
+      });
+
+      const answer = stripMarkdownSymbols(getAiText(out)) || fallbackAnswer;
+
+      return res.json({
+        ok: true,
+        answer,
+        reply: answer,
+        response: answer,
+        text: answer,
+        content: answer,
+        intent,
+        dateContext: date,
+        imageAnalysis,
+        imageCount: images.length,
+        links:
+          intent === 'company-verification' || intent === 'post-safety'
+            ? buildCompanySearchLinks(userPrompt || postContext || imageAnalysis)
+            : buildClickableJobLinks(userPrompt || postContext || imageAnalysis),
+        source: imageAnalysis ? 'vision-plus-deepseek' : 'deepseek',
+      });
+    } catch (e) {
+      console.error('workspace deepseek error', e);
+
+      const answer = imageAnalysis || fallbackAnswer;
+
+      return res.json({
+        ok: true,
+        answer,
+        reply: answer,
+        response: answer,
+        text: answer,
+        content: answer,
+        intent,
+        dateContext: date,
+        imageAnalysis,
+        imageCount: images.length,
+        links:
+          intent === 'company-verification' || intent === 'post-safety'
+            ? buildCompanySearchLinks(userPrompt || postContext || imageAnalysis)
+            : buildClickableJobLinks(userPrompt || postContext || imageAnalysis),
+        source: imageAnalysis ? 'vision-fallback' : 'fallback',
+      });
+    }
+  } catch (err) {
+    console.error('workspace error', err);
+
+    const answer =
+      'FaceMeX AI is temporarily unavailable. Please try again shortly.';
+
+    return res.json({
+      ok: true,
+      answer,
+      reply: answer,
+      response: answer,
+      text: answer,
+      content: answer,
+      source: 'error-fallback',
+    });
+  }
 }
 
 /* ---------------------------------------------
@@ -826,10 +1587,11 @@ router.post('/post-from-media', async (req, res) => {
     }
 
     const mode = postMode === 'professional' ? 'professional' : 'social';
+    const cleanedText = clean(text);
 
     const system = `You are FaceMeX AI, a world-class social media writer.
 
-Write one post for FaceMeX.
+Write ONE post for FaceMeX.
 
 Rules:
 - Match the media description when provided.
@@ -847,7 +1609,7 @@ MEDIA_DESCRIPTION:
 ${caption || '[none]'}
 
 USER_CONTEXT:
-${clean(text) || '[none]'}
+${cleanedText || '[none]'}
 
 Generate the post now.`;
 
@@ -857,7 +1619,7 @@ Generate the post now.`;
         { role: 'user', content: user },
       ],
       temperature: 0.85,
-      max_tokens: 220,
+      max_tokens: 180,
     });
 
     return res.json({
@@ -907,7 +1669,7 @@ router.post('/comment', async (req, res) => {
     const system = `You are FaceMeX AI. Write a high-quality social media comment that directly matches the post content.
 
 Rules:
-- Be natural, human and non-cringe.
+- Be natural, human, and non-cringe.
 - Do not repeat the post verbatim.
 - Do not invent facts.
 - Keep it ${tone} and supportive.
@@ -945,7 +1707,7 @@ ${cleanedPost}`;
 });
 
 /* ---------------------------------------------
-   TEST + RUNTIME
+   TEST ROUTES
 --------------------------------------------- */
 
 router.get('/test', async (_req, res) => {
@@ -979,11 +1741,10 @@ router.get('/runtime-context', (req, res) => {
   return res.json({
     ok: true,
     dateContext: getSouthAfricaDateContext(),
-    detectedIntent: detectMainIntent(query),
     detectedLocation: extractLocation(query),
     detectedJobType: extractJobType(query),
-    detectedCompany: extractCompanyName(query),
-    links: buildUsefulLinks(query),
+    links: buildClickableJobLinks(query),
+    visionConfigured: Boolean(process.env.OPENAI_VISION_API_KEY || process.env.OPENAI_API_KEY),
   });
 });
 
@@ -995,177 +1756,162 @@ router.get('/job-search-links', (req, res) => {
     query,
     detectedLocation: extractLocation(query),
     detectedJobType: extractJobType(query),
-    detectedCompany: extractCompanyName(query),
     dateContext: getSouthAfricaDateContext(),
-    links: buildUsefulLinks(query),
+    links: buildClickableJobLinks(query),
   });
 });
 
 /* ---------------------------------------------
-   UNIVERSAL WORKSPACE HANDLER
+   REPLY
 --------------------------------------------- */
 
-async function handleWorkspace(req, res) {
+router.post('/reply', async (req, res) => {
   try {
-    const userPrompt = extractUserTextFromBody(req.body);
-    const postContext = extractPostContextFromBody(req.body);
-    const intent = detectMainIntent(userPrompt, postContext);
+    const { message = '', style = '' } = req.body || {};
+    const cleanedMessage = normalizeUserPromptText(message);
     const date = getSouthAfricaDateContext();
-    const links = buildUsefulLinks(userPrompt, postContext);
 
-    if (!userPrompt && !postContext) {
-      const answer = 'Please type what you need help with.';
-
-      return res.status(400).json({
-        ok: false,
-        answer,
-        reply: answer,
-        response: answer,
-        text: answer,
-        content: answer,
-      });
-    }
-
-    if (intent === 'date') {
-      const answer = `Today's date is ${date.shortDate}.`;
-
+    if (isDatePrompt(cleanedMessage)) {
       return res.json({
-        ok: true,
-        answer,
-        reply: answer,
-        response: answer,
-        text: answer,
-        content: answer,
-        intent,
-        dateContext: date,
-        links,
+        success: true,
+        response: buildDateAnswer(),
         source: 'date-direct',
       });
     }
 
-    if (intent === 'unsafe') {
-      const answer =
-        'I can’t help with that. I can help you do it safely, legally, and professionally instead.';
+    const intent = detectWorkspaceIntent(cleanedMessage, false, '');
 
-      return res.json({
-        ok: true,
-        answer,
-        reply: answer,
-        response: answer,
-        text: answer,
-        content: answer,
-        intent,
-        dateContext: date,
-        source: 'safety-direct',
-      });
-    }
+    const prompt = `You are a helpful FaceMeX assistant.
 
-    const systemPrompt = buildSmartSystemPrompt({
-      userText: userPrompt,
-      postContext,
-      intent,
-    });
+Current date:
+Today is ${date.readableDateTime}.
+Short date: ${date.shortDate}.
+Timezone: ${date.timeZone}.
+
+Style: ${style || 'clear and friendly'}
+Intent: ${intent}
+
+Reply naturally to:
+${cleanedMessage}`;
 
     try {
-      const out = await callDeepseekChat({
-        messages: [
-          {
-            role: 'system',
-            content: systemPrompt,
-          },
-          {
-            role: 'user',
-            content: `User typed:
-${userPrompt || '[No direct user text]'}
-
-Post/feed context:
-${postContext || '[No post context provided]'}
-
-Answer now by understanding the user's real intent.`,
-          },
-        ],
-        temperature: 0.4,
-        max_tokens: 1800,
+      const out = await callLlamaChat({
+        messages: [{ role: 'user', content: prompt }],
       });
 
-      const answer = getAiText(out) || buildSafeFallback(userPrompt, postContext);
+      const response = getAiText(out);
 
-      return res.json({
-        ok: true,
-        answer,
-        reply: answer,
-        response: answer,
-        text: answer,
-        content: answer,
-        intent,
-        dateContext: date,
-        links,
-        source: 'deepseek-smart-workspace',
-      });
+      if (response) {
+        return res.json({
+          success: true,
+          response,
+          source: 'llama-api',
+        });
+      }
     } catch (e) {
-      console.error('workspace deepseek error', e);
+      console.error('reply llama error', e);
+    }
 
-      const answer = buildSafeFallback(userPrompt, postContext);
+    const out = await callDeepseekChat({
+      messages: [
+        {
+          role: 'system',
+          content: buildGeneralSystemPrompt({
+            intent,
+            userText: cleanedMessage,
+          }),
+        },
+        {
+          role: 'user',
+          content: cleanedMessage,
+        },
+      ],
+    });
 
-      return res.json({
-        ok: true,
-        answer,
-        reply: answer,
-        response: answer,
-        text: answer,
-        content: answer,
-        intent,
-        dateContext: date,
-        links,
-        source: 'smart-fallback',
+    return res.json({
+      success: true,
+      response: getAiText(out),
+      source: 'deepseek-api',
+    });
+  } catch (err) {
+    return res.json({
+      success: false,
+      error: err.message,
+    });
+  }
+});
+
+/* ---------------------------------------------
+   DIRECT DEEPSEEK
+--------------------------------------------- */
+
+router.post('/deepseek', async (req, res) => {
+  try {
+    const { prompt = '' } = req.body || {};
+    const cleaned = normalizeUserPromptText(prompt);
+
+    if (!cleaned) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Missing prompt',
       });
     }
-  } catch (err) {
-    console.error('workspace error', err);
 
-    const answer = 'FaceMeX AI is temporarily unavailable. Please try again shortly.';
+    if (isDatePrompt(cleaned)) {
+      return res.json({
+        ok: true,
+        text: buildDateAnswer(),
+        source: 'date-direct',
+      });
+    }
+
+    const intent = detectWorkspaceIntent(cleaned, false, '');
+
+    const out = await callDeepseekChat({
+      messages: [
+        {
+          role: 'system',
+          content: buildGeneralSystemPrompt({
+            intent,
+            userText: cleaned,
+          }),
+        },
+        {
+          role: 'user',
+          content: cleaned,
+        },
+      ],
+    });
 
     return res.json({
       ok: true,
-      answer,
-      reply: answer,
-      response: answer,
-      text: answer,
-      content: answer,
-      source: 'error-fallback',
+      text: getAiText(out),
+      source: 'deepseek-api',
+    });
+  } catch (err) {
+    console.error('DeepSeek handler error', err);
+
+    return res.status(500).json({
+      ok: false,
+      error: err.message || 'DeepSeek failed',
     });
   }
-}
+});
 
 /* ---------------------------------------------
-   REPLY + DIRECT AI
---------------------------------------------- */
-
-router.post('/reply', handleWorkspace);
-router.post('/deepseek', handleWorkspace);
-router.post('/pro/job-assistant', handleWorkspace);
-router.post('/job-assistant', handleWorkspace);
-router.post('/workspace', handleWorkspace);
-router.post('/career-workspace', handleWorkspace);
-router.post('/ask', handleWorkspace);
-router.post('/chat', handleWorkspace);
-
-/* ---------------------------------------------
-   DEV POST ENHANCER
+   DEV TOOLS
 --------------------------------------------- */
 
 router.post('/dev/post-enhancer', async (req, res) => {
   try {
     const { text = '' } = req.body || {};
 
-    const prompt = `You are an expert social media copywriter for FaceMeX.
-
-Rewrite this post to be clearer and more engaging while keeping the same core message and tone.
+    const prompt = `Rewrite this post to be clearer and more engaging while keeping the same core message and tone.
 
 Requirements:
 - Keep it short and scannable.
 - Make the first line a strong hook.
-- Add 2 to 4 relevant hashtags on the last line only if natural.
+- Add 2 to 4 relevant hashtags only if natural.
 - Return plain text only.
 
 Post:
@@ -1192,17 +1938,11 @@ ${clean(text) || 'Write a short, friendly post for my FaceMeX audience.'}`;
   }
 });
 
-/* ---------------------------------------------
-   CAPTION MUSE
---------------------------------------------- */
-
 router.post('/dev/caption-muse', async (req, res) => {
   try {
     const { topic = '' } = req.body || {};
 
-    const prompt = `You are a playful but professional caption generator for FaceMeX.
-
-Generate 3 short, scroll-stopping social captions for:
+    const prompt = `Generate 3 short, scroll-stopping social captions for:
 ${clean(topic) || 'a moment on FaceMeX'}
 
 Requirements:
@@ -1240,17 +1980,11 @@ Requirements:
   }
 });
 
-/* ---------------------------------------------
-   TREND FINDER
---------------------------------------------- */
-
 router.post('/dev/trend-finder', async (req, res) => {
   try {
     const { niche = 'general' } = req.body || {};
 
-    const prompt = `You are a trend analyst for creators on FaceMeX.
-
-For the niche: "${clean(niche) || 'general'}"
+    const prompt = `For the niche: "${clean(niche) || 'general'}"
 
 Give 5 trending hashtags with an estimated popularity score from 0 to 100.
 
@@ -1296,10 +2030,6 @@ Return plain text only.`;
   }
 });
 
-/* ---------------------------------------------
-   CREATOR ASSISTANT
---------------------------------------------- */
-
 router.post('/dev/assistant', async (req, res) => {
   try {
     const {
@@ -1308,9 +2038,7 @@ router.post('/dev/assistant', async (req, res) => {
       topic = 'content',
     } = req.body || {};
 
-    const prompt = `You are a concise creator and professional coach for FaceMeX.
-
-User goal: ${goal}
+    const prompt = `User goal: ${goal}
 Audience: ${audience}
 Topic: ${topic}
 
@@ -1335,45 +2063,13 @@ Return plain text only.`;
       max_tokens: 300,
     });
 
-    const lines = getAiText(out)
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-
-    const tips = [];
-    const ideas = [];
-    let mode = 'tips';
-
-    for (const line of lines) {
-      if (/^ideas\s*:/i.test(line)) {
-        mode = 'ideas';
-        continue;
-      }
-
-      if (/^tips\s*:/i.test(line)) {
-        mode = 'tips';
-        continue;
-      }
-
-      const cleaned = line.replace(/^[-*\d.\s]+/, '').trim();
-
-      if (!cleaned) continue;
-
-      if (mode === 'tips') tips.push(cleaned);
-      else ideas.push(cleaned);
-    }
-
     return res.json({
       ok: true,
-      goal,
-      audience,
-      topic,
-      tips: tips.slice(0, 3),
-      ideas: ideas.slice(0, 3),
+      result: getAiText(out),
       source: 'deepseek-api',
     });
   } catch (err) {
-    console.error('assistant error', err);
+    console.error('Assistant error', err);
 
     return res.status(500).json({
       ok: false,
@@ -1383,96 +2079,7 @@ Return plain text only.`;
 });
 
 /* ---------------------------------------------
-   CV HELPERS
---------------------------------------------- */
-
-function titleCaseWords(text = '') {
-  return clean(text)
-    .toLowerCase()
-    .split(/\s+/)
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(' ');
-}
-
-function splitList(value = '') {
-  return clean(value)
-    .split(/[,;\n/]+/)
-    .map((item) => clean(item))
-    .filter(Boolean)
-    .slice(0, 8);
-}
-
-function buildClassicA4CvTemplate({
-  fullName = '',
-  email = '',
-  phone = '',
-  location = '',
-  idNumber = '',
-  showIdOnCv = false,
-  summary = '',
-  experience = '',
-  skills = '',
-  education = '',
-  extras = '',
-}) {
-  const name = clean(fullName) || '[YOUR NAME]';
-  const cleanEmail = clean(email) || 'your.email@example.com';
-  const cleanPhone = clean(phone) || '+27 00 000 0000';
-  const cleanLocation = clean(location) || 'Your City, South Africa';
-
-  const finalSkills = splitList(skills);
-  const finalExtras = splitList(extras);
-
-  const profileLine =
-    showIdOnCv && clean(idNumber)
-      ? `Address: ${cleanLocation} | Contact: ${cleanPhone} | Email: ${cleanEmail} | Profile ID: ${clean(idNumber)}`
-      : `Address: ${cleanLocation} | Contact: ${cleanPhone} | Email: ${cleanEmail}`;
-
-  return `${name.toUpperCase()}
-${profileLine}
-
-PROFESSIONAL SUMMARY
-${clean(summary) || 'Reliable and motivated candidate with strong communication, teamwork and customer service skills. Able to follow instructions, work under pressure and complete tasks on time.'}
-
-CORE COMPETENCIES
-${
-  finalSkills.length
-    ? finalSkills.map((item) => `- ${titleCaseWords(item)}`).join('\n')
-    : `- Customer service
-- Communication
-- Teamwork
-- Time management
-- Problem solving`
-}
-
-PROFESSIONAL EXPERIENCE
-${clean(experience) || `[Job Title] | [Company Name] | [Year]
-- Supported daily workplace tasks and followed instructions.
-- Assisted customers, team members or management professionally.
-- Completed duties on time and maintained reliability.`}
-
-EDUCATION
-${clean(education) || '[School / College / Institution] | [Qualification] | [Year]'}
-
-TECHNICAL SKILLS
-${
-  finalExtras.length
-    ? finalExtras.map((item) => `- ${titleCaseWords(item)}`).join('\n')
-    : `- Basic computer literacy
-- Email communication
-- MS Office`
-}
-
-LANGUAGES
-- English: Fluent
-- Sepedi: Mother tongue
-
-REFERENCES
-Available Upon Request`;
-}
-
-/* ---------------------------------------------
-   RESUME BUILDER
+   CV BUILDER
 --------------------------------------------- */
 
 router.post('/pro/resume-builder', async (req, res) => {
@@ -1507,51 +2114,94 @@ router.post('/pro/resume-builder', async (req, res) => {
       extras,
     });
 
-    const prompt = `Create a clean one-page A4 CV for a South African candidate.
+    const prompt = `Create a clean one-page A4 CV using this exact classic ATS template style:
+
+FULL NAME IN CAPITAL LETTERS
+Address: [Location] | Contact: [Phone] | Email: [Email]
+
+PROFESSIONAL SUMMARY
+Short professional paragraph.
+
+CORE COMPETENCIES
+- Skill
+- Skill
+- Skill
+- Skill
+- Skill
+
+PROFESSIONAL EXPERIENCE
+Job Title | Company | Year
+- Responsibility or achievement
+- Responsibility or achievement
+- Responsibility or achievement
+
+EDUCATION
+Qualification | Institution | Year
+
+TECHNICAL SKILLS
+- Skill
+- Skill
+- Skill
+
+LANGUAGES
+- Language: Level
+- Language: Level
+
+REFERENCES
+Available Upon Request
 
 Rules:
-- Professional.
-- One page.
+- One A4 page only.
 - Plain text only.
 - No markdown.
 - No tables.
-- Do not invent fake qualifications or jobs.
-- Improve weak grammar.
-- Remove unnecessary sensitive personal details.
-- Use this structure:
-FULL NAME
-Contact line
-PROFESSIONAL SUMMARY
-CORE COMPETENCIES
-PROFESSIONAL EXPERIENCE
-EDUCATION
-TECHNICAL SKILLS
-LANGUAGES
-REFERENCES
+- Rewrite weak input professionally.
+- Do not invent fake degrees, companies, licences, or job titles.
+- Do not include sensitive ID unless Show Profile ID on CV is Yes.
 
-Candidate:
-Name: ${clean(fullName) || '[Your Name]'}
+Candidate details:
+Full name: ${clean(fullName) || '[Your Name]'}
 Email: ${clean(email) || 'your.email@example.com'}
 Phone: ${clean(phone) || '+27 00 000 0000'}
 Location: ${clean(location) || 'Your City, South Africa'}
-Show Profile ID: ${safeShowIdOnCv ? 'Yes' : 'No'}
-Profile ID: ${safeShowIdOnCv ? clean(idNumber) : '[do not include]'}
-Summary: ${clean(summary) || '[not provided]'}
-Experience: ${clean(experience) || '[not provided]'}
-Skills: ${clean(skills) || '[not provided]'}
-Education: ${clean(education) || '[not provided]'}
-Extras: ${clean(extras) || '[not provided]'}`;
+Show Profile ID on CV: ${safeShowIdOnCv ? 'Yes' : 'No'}
+Profile ID: ${safeShowIdOnCv ? clean(idNumber) || '[optional]' : '[do not include]'}
+
+Professional Summary:
+${clean(summary) || '[not provided]'}
+
+Core Competencies / Skills:
+${clean(skills) || '[not provided]'}
+
+Professional Experience:
+${clean(experience) || '[not provided]'}
+
+Education:
+${clean(education) || '[not provided]'}
+
+Additional Info:
+${clean(extras) || '[not provided]'}`;
 
     try {
       const out = await callDeepseekChat({
-        messages: [{ role: 'user', content: prompt }],
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You are an expert South African CV writer. Return only a clean one-page A4 CV using the requested classic ATS template.',
+          },
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
         temperature: 0.25,
         max_tokens: 900,
       });
 
-      const resumeText = getAiText(out);
+      const resumeText = stripMarkdownSymbols(getAiText(out));
 
-      if (resumeText && resumeText.length > 250) {
+      if (resumeText && resumeText.length > 250 && resumeText.includes('PROFESSIONAL SUMMARY')) {
         return res.json({
           ok: true,
           resumeText,
@@ -1587,13 +2237,15 @@ Extras: ${clean(extras) || '[not provided]'}`;
   }
 });
 
-/* ---------------------------------------------
-   RESUME IMPROVER
---------------------------------------------- */
-
 router.post('/pro/resume-improver', async (req, res) => {
   try {
-    const { existingCv = '', targetLevel = '', extras = '' } = req.body || {};
+    const {
+      existingCv = '',
+      targetLevel = '',
+      extras = '',
+      tier = 'free',
+      creatorPlus,
+    } = req.body || {};
 
     const baseCv = clean(existingCv);
 
@@ -1604,16 +2256,17 @@ router.post('/pro/resume-improver', async (req, res) => {
       });
     }
 
-    const prompt = `Rewrite this CV into a stronger one-page A4 CV.
+    const canUseAi = isCreatorTier(tier, creatorPlus);
 
-Rules:
-- Professional South African CV.
-- Plain text only.
-- No markdown.
-- No tables.
-- Correct grammar.
-- Do not invent fake companies, qualifications, licences or job titles.
-- Remove unnecessary sensitive personal details.
+    if (!canUseAi) {
+      return res.json({
+        ok: true,
+        improvedText: baseCv,
+        source: 'free-template',
+      });
+    }
+
+    const prompt = `Rewrite this CV into a stronger one-page A4 CV using classic ATS structure.
 
 Target level:
 ${targetLevel || 'professional'}
@@ -1624,42 +2277,29 @@ ${extras || '[none]'}
 Current CV:
 ${baseCv}`;
 
-    try {
-      const out = await callDeepseekChat({
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.25,
-        max_tokens: 900,
-      });
-
-      const improvedText = getAiText(out);
-
-      if (improvedText && improvedText.length > 250) {
-        return res.json({
-          ok: true,
-          improvedText,
-          pageSize: 'A4',
-          layout: 'classic-ats-one-page',
-          source: 'deepseek-api',
-        });
-      }
-    } catch (e) {
-      console.error('resume-improver deepseek error', e);
-    }
+    const out = await callDeepseekChat({
+      messages: [
+        {
+          role: 'system',
+          content:
+            'You are an expert CV improver. Return only a clean one-page A4 CV.',
+        },
+        {
+          role: 'user',
+          content: prompt,
+        },
+      ],
+      temperature: 0.25,
+      max_tokens: 900,
+    });
 
     return res.json({
       ok: true,
-      improvedText: `IMPROVED CV DRAFT
-
-${baseCv}
-
-NEXT STEPS
-- Keep your CV to one A4 page.
-- Correct grammar before sending.
-- Remove unnecessary sensitive personal details.
-- Tailor the CV to each job.`,
+      improvedText: stripMarkdownSymbols(getAiText(out)),
       pageSize: 'A4',
       layout: 'classic-ats-one-page',
-      source: 'fallback',
+      template: 'six-second-cv',
+      source: 'deepseek-api',
     });
   } catch (err) {
     console.error('resume-improver error', err);
@@ -1667,15 +2307,11 @@ NEXT STEPS
     return res.json({
       ok: true,
       improvedText:
-        'Paste your current CV again and include your job target, experience, skills, education and languages.',
+        'Paste your current CV again and include your job target, experience, skills, education, languages, and additional information.',
       source: 'error-fallback',
     });
   }
 });
-
-/* ---------------------------------------------
-   COVER LETTER
---------------------------------------------- */
 
 router.post('/pro/cover-letter', async (req, res) => {
   try {
@@ -1689,20 +2325,22 @@ router.post('/pro/cover-letter', async (req, res) => {
       creatorPlus,
     } = req.body || {};
 
-    const canUseAi = isCreatorTier(tier, creatorPlus) || isProTier(tier);
+    const nameLine = candidateName || '[Your Name]';
 
     const baseLetter = `Dear Hiring Manager,
 
-I am interested in applying for the ${jobTitle || 'role'} at ${company || 'your company'}. I believe my skills, attitude and willingness to learn make me a strong candidate for this opportunity.
+I am excited to apply for the ${jobTitle || 'role'} at ${company || 'your company'}. I believe my background, skills, and willingness to learn make me a strong fit for this opportunity.
 
-${resumeSummary || 'I am hardworking, reliable and able to work professionally with a team.'}
+${resumeSummary || 'I bring a strong work ethic, good communication skills, and a commitment to completing tasks professionally.'}
 
-${extras || 'I would appreciate the opportunity to be considered for this position.'}
+${extras || 'I am interested in this role because it matches my career goals and gives me an opportunity to grow while adding value to the company.'}
 
-Thank you for considering my application.
+Thank you for considering my application. I would welcome the opportunity to discuss how I can contribute to your team.
 
-Kind regards,
-${candidateName || '[Your Name]'}`;
+Sincerely,
+${nameLine}`;
+
+    const canUseAi = isCreatorTier(tier, creatorPlus);
 
     if (!canUseAi) {
       return res.json({
@@ -1727,33 +2365,19 @@ Rules:
 - 3 to 5 short paragraphs.
 - Professional but warm.
 - Plain text only.
-- No markdown.
+- Easy to copy and paste.
 - Do not invent fake experience.`;
 
-    try {
-      const out = await callDeepseekChat({
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.45,
-        max_tokens: 650,
-      });
-
-      const letter = getAiText(out);
-
-      if (letter) {
-        return res.json({
-          ok: true,
-          letter,
-          source: 'deepseek-api',
-        });
-      }
-    } catch (e) {
-      console.error('cover-letter deepseek error', e);
-    }
+    const out = await callDeepseekChat({
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.45,
+      max_tokens: 650,
+    });
 
     return res.json({
       ok: true,
-      letter: baseLetter,
-      source: 'fallback',
+      letter: stripMarkdownSymbols(getAiText(out)) || baseLetter,
+      source: 'deepseek-api',
     });
   } catch (err) {
     console.error('cover-letter error', err);
@@ -1772,6 +2396,17 @@ Sincerely,
     });
   }
 });
+
+/* ---------------------------------------------
+   WORKSPACE ROUTES
+--------------------------------------------- */
+
+router.post('/pro/job-assistant', handleCareerWorkspace);
+router.post('/job-assistant', handleCareerWorkspace);
+router.post('/workspace', handleCareerWorkspace);
+router.post('/career-workspace', handleCareerWorkspace);
+router.post('/ask', handleCareerWorkspace);
+router.post('/chat', handleCareerWorkspace);
 
 /* ---------------------------------------------
    TRANSLATE
@@ -1804,27 +2439,17 @@ Target language: ${targetLang}
 Text:
 ${text}`;
 
-    try {
-      const out = await callDeepseekChat({
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.2,
-        max_tokens: 700,
-      });
+    const out = await callDeepseekChat({
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.2,
+      max_tokens: 700,
+    });
 
-      return res.json({
-        ok: true,
-        translated: getAiText(out) || text,
-        source: 'deepseek-api',
-      });
-    } catch (e) {
-      console.error('translate deepseek error', e);
-
-      return res.json({
-        ok: true,
-        translated: text,
-        source: 'fallback',
-      });
-    }
+    return res.json({
+      ok: true,
+      translated: getAiText(out) || text,
+      source: 'deepseek-api',
+    });
   } catch (err) {
     console.error('AI translate error', err);
 
