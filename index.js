@@ -55,7 +55,10 @@ const allowedOrigins = [
   'https://www.facemexsocial.com',
   'https://privatebeta4.netlify.app',
   'http://localhost:5173',
-];
+  process.env.CLIENT_ORIGIN,
+  process.env.FRONTEND_URL,
+  process.env.NETLIFY_URL,
+].filter(Boolean);
 
 const isAllowedOrigin = (origin) => {
   if (!origin) return true;
@@ -471,9 +474,10 @@ app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
 
 /*
   NORMAL BODY PARSERS
+  Increased to 35mb so FaceMeX Workspace can receive up to 4 compressed images.
 */
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '35mb' }));
+app.use(express.urlencoded({ extended: true, limit: '35mb' }));
 
 /*
   HEALTH + PING ROUTES
@@ -570,9 +574,16 @@ app.get('/api/health', async (_req, res) => {
       generalQuestions: true,
       facemexKnowledge: true,
       postSafetyChecks: true,
+      imageAnalysis: true,
+      visionConfigured: !!(
+        process.env.OPENAI_VISION_API_KEY || process.env.OPENAI_API_KEY
+      ),
+      visionModel: process.env.OPENAI_VISION_MODEL || 'gpt-4o-mini',
       clickableJobLinks: true,
       liveBrowsing: false,
-      note: 'AI answers are handled in routes/ai.js. Frontend should send postText/currentPost/feedContext for post-specific checks.',
+      maxJsonPayload: '35mb',
+      note:
+        'AI answers and image analysis are handled in routes/ai.js. Frontend can send imageDataUrls/images to /api/ai/pro/job-assistant.',
     },
     yoco: {
       secretKeyConfigured: !!process.env.YOCO_SECRET_KEY,
@@ -610,8 +621,14 @@ app.get('/api/ai/runtime-context', (_req, res) => {
       generalQuestions: true,
       facemexKnowledge: true,
       postSafetyChecks: true,
+      imageAnalysis: true,
+      visionConfigured: !!(
+        process.env.OPENAI_VISION_API_KEY || process.env.OPENAI_API_KEY
+      ),
+      visionModel: process.env.OPENAI_VISION_MODEL || 'gpt-4o-mini',
       clickableJobLinks: true,
       liveBrowsing: false,
+      maxJsonPayload: '35mb',
     },
   });
 });
@@ -644,7 +661,7 @@ app.use('/api/payments', paymentsRouter);
 /*
   IMPORTANT:
   AI prompt style, FaceMeX knowledge, job answers, date answers,
-  and post safety checks are handled inside routes/ai.js.
+  image analysis, and post safety checks are handled inside routes/ai.js.
   Do not inject templates here.
 */
 app.use('/api/ai', aiRouter);
