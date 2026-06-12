@@ -6,7 +6,7 @@ import { requireAuth } from '../middleware/auth.js';
 const router = Router();
 
 /*
-  OLD FACE MEX JOBS SYSTEM
+  OLD FACEMEX JOBS SYSTEM
   Kept for business users posting jobs and people applying inside FaceMeX.
 */
 let jobs = [];
@@ -354,8 +354,7 @@ function mapJobForFrontend(job) {
     sourceLabel: job.source_label || 'Source',
     sourceType: job.source_type || 'external_job_api',
     verificationStatus: job.verification_status || 'needs_verification',
-    actionLabel:
-      job.verification_status === 'verified' ? 'Apply Now' : 'Verify First',
+    actionLabel: job.verification_status === 'verified' ? 'Apply Now' : 'Verify First',
     createdAt: job.created_at || null,
     isSourceCard: false,
   };
@@ -386,12 +385,12 @@ function buildAdzunaUrl({ query, area, page = 1 }) {
   const appKey = process.env.ADZUNA_APP_KEY;
 
   const params = new URLSearchParams({
-    app_id: appId,
-    app_key: appKey,
+    app_id: appId || '',
+    app_key: appKey || '',
     what: query || 'jobs',
     where: area || 'Tzaneen',
     results_per_page: '50',
-    content_type: 'application/json',
+    'content-type': 'application/json',
     sort_by: 'date',
   });
 
@@ -414,9 +413,7 @@ function normalizeAdzunaJob(job, areaFallback) {
     company,
     area,
     province: area.toLowerCase().includes('limpopo') ? 'Limpopo' : null,
-    category:
-      clean(job.category?.label) ||
-      getAdzunaCategoryFallback(title, description),
+    category: clean(job.category?.label) || getAdzunaCategoryFallback(title, description),
     salary:
       job.salary_min && job.salary_max
         ? `R${Math.round(job.salary_min)} - R${Math.round(job.salary_max)}`
@@ -450,7 +447,7 @@ async function fetchAdzunaJobs({ query, area, pages = 2 }) {
 
     if (!response.ok) {
       const text = await response.text().catch(() => '');
-      throw new Error(`Adzuna failed ${response.status}: ${text.slice(0, 120)}`);
+      throw new Error(`Adzuna failed ${response.status}: ${text.slice(0, 160)}`);
     }
 
     const data = await response.json();
@@ -541,13 +538,8 @@ async function searchSupabaseJobs({ query, area, limit = 80 }) {
     .filter((job) => textMatchesArea(job, area))
     .filter((job) => textMatchesQuery(job, query))
     .sort((a, b) => {
-      if (a.verification_status === 'verified' && b.verification_status !== 'verified') {
-        return -1;
-      }
-
-      if (a.verification_status !== 'verified' && b.verification_status === 'verified') {
-        return 1;
-      }
+      if (a.verification_status === 'verified' && b.verification_status !== 'verified') return -1;
+      if (a.verification_status !== 'verified' && b.verification_status === 'verified') return 1;
 
       return String(a.title || '').localeCompare(String(b.title || ''));
     })
@@ -582,11 +574,7 @@ function getFallbackSourceCards({ area }) {
   const localFirst = OFFICIAL_SOURCE_CARDS.filter((job) => {
     const text = `${job.area} ${job.company} ${job.title}`.toLowerCase();
 
-    return (
-      text.includes(areaValue) ||
-      text.includes('south africa') ||
-      text.includes('limpopo')
-    );
+    return text.includes(areaValue) || text.includes('south africa') || text.includes('limpopo');
   });
 
   return localFirst.length ? localFirst : OFFICIAL_SOURCE_CARDS;
@@ -608,11 +596,13 @@ router.get('/status', (_req, res) => {
 });
 
 router.get('/auto-search', async (req, res) => {
-  try {
-    const query = normalizeQuery(req.query.query);
-    const area = normalizeArea(req.query.area);
-    const limit = Math.min(Number(req.query.limit || 80), 100);
+  const query = normalizeQuery(req.query.query);
+  const area = normalizeArea(req.query.area);
+  const limit = Math.min(Number(req.query.limit || 80), 100);
 
+  const warnings = [];
+
+  try {
     await saveOfficialSourceCards();
 
     const employerJobs = searchFaceMeXEmployerJobs({
@@ -621,30 +611,51 @@ router.get('/auto-search', async (req, res) => {
       limit: 30,
     }).map(jsonJobToFrontend);
 
-    let dbJobs = await searchSupabaseJobs({
-      query,
-      area,
-      limit,
-    });
+    let dbJobs = [];
 
-    if (dbJobs.length < 10 && process.env.ADZUNA_APP_ID && process.env.ADZUNA_APP_KEY) {
-      const liveJobs = await fetchAdzunaJobs({
-        query,
-        area,
-        pages: 2,
-      });
-
-      await upsertJobs(liveJobs);
-
+    try {
       dbJobs = await searchSupabaseJobs({
         query,
         area,
         limit,
       });
+    } catch (error) {
+      console.error('Supabase job search failed:', error?.message || error);
+      warnings.push(`Supabase search failed: ${error?.message || 'Unknown error'}`);
+    }
+
+    if (dbJobs.length < 10 && process.env.ADZUNA_APP_ID && process.env.ADZUNA_APP_KEY) {
+      try {
+        const liveJobs = await fetchAdzunaJobs({
+          query,
+          area,
+          pages: 2,
+        });
+
+        try {
+          await upsertJobs(liveJobs);
+        } catch (error) {
+          console.error('Supabase upsert after Adzuna failed:', error?.message || error);
+          warnings.push(`Supabase upsert failed: ${error?.message || 'Unknown error'}`);
+        }
+
+        try {
+          dbJobs = await searchSupabaseJobs({
+            query,
+            area,
+            limit,
+          });
+        } catch (error) {
+          console.error('Supabase search after Adzuna failed:', error?.message || error);
+          warnings.push(`Supabase search after Adzuna failed: ${error?.message || 'Unknown error'}`);
+        }
+      } catch (error) {
+        console.error('Adzuna live search failed:', error?.message || error);
+        warnings.push(`Adzuna failed: ${error?.message || 'Unknown error'}`);
+      }
     }
 
     const frontendDbJobs = dbJobs.map(mapJobForFrontend);
-
     const combined = [...employerJobs, ...frontendDbJobs];
 
     const fallbackCards =
@@ -652,7 +663,7 @@ router.get('/auto-search', async (req, res) => {
         ? []
         : getFallbackSourceCards({ area }).map(sourceCardToFrontend);
 
-    res.json({
+    return res.json({
       ok: true,
       source: 'facemex_jobs_auto_search',
       query,
@@ -660,17 +671,19 @@ router.get('/auto-search', async (req, res) => {
       count: combined.length + fallbackCards.length,
       employerPosts: employerJobs.length,
       databaseJobs: frontendDbJobs.length,
+      fallbackCards: fallbackCards.length,
+      warnings,
       jobs: [...combined, ...fallbackCards],
     });
   } catch (error) {
-    console.error('auto-search jobs error:', error?.message || error);
+    console.error('auto-search jobs fatal error:', error?.message || error);
 
-    res.status(500).json({
+    return res.status(500).json({
       ok: false,
-      error: 'Could not search jobs right now.',
-      jobs: getFallbackSourceCards({ area: req.query.area || 'Tzaneen' }).map(
-        sourceCardToFrontend
-      ),
+      error: error?.message || 'Could not search jobs right now.',
+      query,
+      area,
+      jobs: getFallbackSourceCards({ area }).map(sourceCardToFrontend),
     });
   }
 });
@@ -689,6 +702,7 @@ router.post('/refresh', async (req, res) => {
     await saveOfficialSourceCards();
 
     const allJobs = [];
+    const warnings = [];
 
     for (const area of PRIORITY_AREAS) {
       for (const keyword of DEFAULT_KEYWORDS) {
@@ -701,10 +715,12 @@ router.post('/refresh', async (req, res) => {
 
           allJobs.push(...liveJobs);
         } catch (error) {
-          console.error(
-            `Adzuna refresh failed for ${keyword} in ${area}:`,
+          const message = `Adzuna refresh failed for ${keyword} in ${area}: ${
             error?.message || error
-          );
+          }`;
+
+          console.error(message);
+          warnings.push(message);
         }
       }
     }
@@ -715,22 +731,39 @@ router.post('/refresh', async (req, res) => {
       unique.set(`${job.external_source}-${job.external_id}`, job);
     }
 
-    const saved = await upsertJobs([...unique.values()]);
+    let saved = [];
 
-    res.json({
+    try {
+      saved = await upsertJobs([...unique.values()]);
+    } catch (error) {
+      console.error('Refresh upsert failed:', error?.message || error);
+
+      return res.status(500).json({
+        ok: false,
+        error: `Refresh upsert failed: ${error?.message || 'Unknown error'}`,
+        foundBeforeUnique: allJobs.length,
+        uniqueFound: unique.size,
+        warnings,
+      });
+    }
+
+    return res.json({
       ok: true,
       searchedAreas: PRIORITY_AREAS.length,
       searchedKeywords: DEFAULT_KEYWORDS.length,
       foundBeforeUnique: allJobs.length,
+      uniqueFound: unique.size,
       saved: saved.length,
+      warnings,
       message: 'FaceMeX jobs refreshed successfully.',
     });
   } catch (error) {
     console.error('refresh jobs error:', error?.message || error);
 
-    res.status(500).json({
+    return res.status(500).json({
       ok: false,
       error: 'Job refresh failed.',
+      details: error?.message || String(error),
     });
   }
 });
