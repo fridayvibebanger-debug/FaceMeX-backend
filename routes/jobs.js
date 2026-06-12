@@ -59,31 +59,113 @@ if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
   });
 }
 
-const PRIORITY_AREAS = [
-  'Tzaneen',
+/*
+  LOCATION STRATEGY:
+  FaceMeX starts close to the user:
+  Village / township -> town / city -> province -> South Africa -> Africa.
+*/
+
+const GREATER_TZANEEN_VILLAGES_TOWNSHIPS = [
   'Lenyenye',
   'Nkowankowa',
   'Maake',
+  'Burgersdorp',
+  'Mokgolobotho',
+  'Mokgoloboto',
+  'Gavaza',
+  'Dan',
+  'Julesburg',
+  'Lephepane',
+  'Mafarana',
+  'Kujwana',
+  'Khujwana',
+  'Moime',
+  'Runnymede',
+  'Rita',
+  'Deerpark',
+  'Ramokako',
+  'Mohlaba Cross',
+  'Mohlaba',
+  'Bridgeway',
+  'Nwamitwa',
+  'Mogoboya',
+  'Mogapeng',
+  'Petanenge',
+  'Relela',
+  'Myakayaka',
+  'Letsitele Valley',
+];
+
+const LIMPOPO_TOWNS_CITIES = [
+  'Tzaneen',
   'Letsitele',
   'Modjadjiskloof',
   'Haenertsburg',
-  'Polokwane',
+  'Gravelotte',
+  'Giyani',
+  'Malamulele',
   'Phalaborwa',
   'Hoedspruit',
+  'Maruleng',
+  'Polokwane',
+  'Mankweng',
+  'Seshego',
+  'Mokopane',
+  'Lebowakgomo',
   'Makhado',
+  'Louis Trichardt',
+  'Thohoyandou',
   'Musina',
   'Messina',
+  'Bela-Bela',
+  'Modimolle',
+  'Lephalale',
+  'Thabazimbi',
+  'Burgersfort',
+  'Steelpoort',
+  'Marble Hall',
+  'Groblersdal',
+];
+
+const SOUTH_AFRICA_PROVINCES_AND_CITIES = [
   'Limpopo',
   'Gauteng',
   'Johannesburg',
   'Pretoria',
+  'Tshwane',
+  'Soweto',
+  'Sandton',
+  'Midrand',
+  'Centurion',
+  'Ekurhuleni',
+  'Mpumalanga',
+  'Mbombela',
+  'Nelspruit',
+  'Witbank',
+  'Emalahleni',
+  'Secunda',
+  'North West',
+  'Rustenburg',
+  'Mahikeng',
+  'Free State',
+  'Bloemfontein',
+  'KwaZulu-Natal',
+  'KZN',
   'Durban',
+  'Pietermaritzburg',
+  'Eastern Cape',
+  'Gqeberha',
+  'Port Elizabeth',
+  'East London',
+  'Western Cape',
   'Cape Town',
+  'Northern Cape',
+  'Kimberley',
   'South Africa',
-  'Africa',
 ];
 
 const AFRICA_LOCATIONS = [
+  'Africa',
   'South Africa',
   'Zimbabwe',
   'Botswana',
@@ -103,12 +185,21 @@ const AFRICA_LOCATIONS = [
   'Ethiopia',
   'Egypt',
   'Morocco',
-  'Africa',
+  'Angola',
+  'DRC',
+  'Democratic Republic of Congo',
+  'Cameroon',
+  'Senegal',
+  'Ivory Coast',
+  'Cote dIvoire',
 ];
 
-const NON_SA_AFRICA_LOCATIONS = AFRICA_LOCATIONS.filter(
-  (area) => !['South Africa', 'Africa'].includes(area)
-);
+const PRIORITY_AREAS = [
+  ...GREATER_TZANEEN_VILLAGES_TOWNSHIPS,
+  ...LIMPOPO_TOWNS_CITIES,
+  ...SOUTH_AFRICA_PROVINCES_AND_CITIES,
+  ...AFRICA_LOCATIONS,
+];
 
 const JOB_TYPE_KEYWORDS = [
   'jobs',
@@ -543,6 +634,14 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function escapeRegExp(value = '') {
+  return normalizeText(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function uniqueStrings(list = []) {
+  return Array.from(new Set(list.map(normalizeText).filter(Boolean)));
+}
+
 function cacheKey(query, area) {
   return `${normalizeLower(area)}::${normalizeLower(query)}`;
 }
@@ -573,19 +672,20 @@ function saveToCache(query, area, data) {
 
 function detectArea(text = '') {
   const lower = normalizeLower(text);
-  const found = [...PRIORITY_AREAS, ...AFRICA_LOCATIONS].find((area) =>
-    lower.includes(area.toLowerCase())
-  );
+  const sortedAreas = [...PRIORITY_AREAS].sort((a, b) => b.length - a.length);
 
+  const found = sortedAreas.find((area) => lower.includes(area.toLowerCase()));
   return found || 'Tzaneen';
 }
 
 function removeAreaWords(text = '') {
   let output = normalizeText(text);
 
-  [...PRIORITY_AREAS, ...AFRICA_LOCATIONS].forEach((area) => {
-    output = output.replace(new RegExp(`\\b${area}\\b`, 'gi'), ' ');
-  });
+  [...PRIORITY_AREAS]
+    .sort((a, b) => b.length - a.length)
+    .forEach((area) => {
+      output = output.replace(new RegExp(`\\b${escapeRegExp(area)}\\b`, 'gi'), ' ');
+    });
 
   return output.replace(/\s+/g, ' ').trim();
 }
@@ -653,10 +753,170 @@ function detectKeyword(text = '') {
   return cleaned || 'jobs';
 }
 
-function isNonSouthAfricaArea(area = '') {
+function keywordVariants(query = '') {
+  const lower = normalizeLower(query);
+
+  if (/driver|code 10|code 14|courier|delivery|truck/.test(lower)) {
+    return uniqueStrings([
+      query,
+      'driver',
+      'delivery driver',
+      'courier driver',
+      'code 10 driver',
+      'code 14 driver',
+      'truck driver',
+      'logistics driver',
+    ]);
+  }
+
+  if (/cashier|retail|packer|store|sales/.test(lower)) {
+    return uniqueStrings([
+      query,
+      'cashier',
+      'packer',
+      'retail assistant',
+      'store assistant',
+      'sales assistant',
+      'general worker',
+    ]);
+  }
+
+  if (/farm|agriculture|packhouse|packing|picker/.test(lower)) {
+    return uniqueStrings([
+      query,
+      'farm worker',
+      'packhouse worker',
+      'packer',
+      'picker',
+      'agriculture',
+      'general worker',
+    ]);
+  }
+
+  if (/admin|clerk|reception|data/.test(lower)) {
+    return uniqueStrings([
+      query,
+      'admin clerk',
+      'administrator',
+      'receptionist',
+      'data capturer',
+      'office assistant',
+    ]);
+  }
+
+  if (/security|guard/.test(lower)) {
+    return uniqueStrings([
+      query,
+      'security guard',
+      'security officer',
+      'reaction officer',
+      'armed response',
+    ]);
+  }
+
+  if (/cleaner|cleaning|housekeeping|domestic/.test(lower)) {
+    return uniqueStrings([
+      query,
+      'cleaner',
+      'cleaning',
+      'housekeeping',
+      'domestic worker',
+    ]);
+  }
+
+  if (/learnership|internship|graduate|apprentice|youth/.test(lower)) {
+    return uniqueStrings([
+      query,
+      'learnership',
+      'internship',
+      'graduate programme',
+      'apprenticeship',
+      'youth opportunity',
+    ]);
+  }
+
+  return uniqueStrings([query, 'jobs', 'general worker']);
+}
+
+function isGreaterTzaneenLocal(area = '') {
+  const lower = normalizeLower(area);
+  return [...GREATER_TZANEEN_VILLAGES_TOWNSHIPS, 'Tzaneen'].some(
+    (item) => lower === item.toLowerCase()
+  );
+}
+
+function isLimpopoArea(area = '') {
+  const lower = normalizeLower(area);
+  return [...GREATER_TZANEEN_VILLAGES_TOWNSHIPS, ...LIMPOPO_TOWNS_CITIES, 'Limpopo'].some(
+    (item) => lower === item.toLowerCase()
+  );
+}
+
+function isSouthAfricaArea(area = '') {
   const lower = normalizeLower(area);
 
-  return NON_SA_AFRICA_LOCATIONS.some((location) => lower.includes(location.toLowerCase()));
+  return [
+    ...GREATER_TZANEEN_VILLAGES_TOWNSHIPS,
+    ...LIMPOPO_TOWNS_CITIES,
+    ...SOUTH_AFRICA_PROVINCES_AND_CITIES,
+    'South Africa',
+  ].some((item) => lower === item.toLowerCase());
+}
+
+function isAfricaArea(area = '') {
+  const lower = normalizeLower(area);
+  return AFRICA_LOCATIONS.some((item) => lower === item.toLowerCase());
+}
+
+function isNonSouthAfricaAfricanArea(area = '') {
+  const lower = normalizeLower(area);
+
+  return AFRICA_LOCATIONS.some(
+    (item) =>
+      item.toLowerCase() === lower &&
+      !['africa', 'south africa'].includes(item.toLowerCase())
+  );
+}
+
+function expandSearchLocations(area = 'Tzaneen') {
+  const cleanArea = normalizeText(area || 'Tzaneen');
+
+  if (isGreaterTzaneenLocal(cleanArea)) {
+    return uniqueStrings([cleanArea, 'Tzaneen', 'Limpopo', 'South Africa', 'Africa']);
+  }
+
+  if (isLimpopoArea(cleanArea)) {
+    return uniqueStrings([cleanArea, 'Limpopo', 'South Africa', 'Africa']);
+  }
+
+  if (isSouthAfricaArea(cleanArea)) {
+    if (normalizeLower(cleanArea) === 'south africa') {
+      return uniqueStrings(['South Africa', 'Africa']);
+    }
+
+    return uniqueStrings([cleanArea, 'South Africa', 'Africa']);
+  }
+
+  if (normalizeLower(cleanArea) === 'africa') {
+    return uniqueStrings([
+      'Africa',
+      'South Africa',
+      'Zimbabwe',
+      'Botswana',
+      'Namibia',
+      'Mozambique',
+      'Zambia',
+      'Kenya',
+      'Nigeria',
+      'Ghana',
+    ]);
+  }
+
+  if (isAfricaArea(cleanArea)) {
+    return uniqueStrings([cleanArea, 'Africa']);
+  }
+
+  return uniqueStrings([cleanArea, 'Limpopo', 'South Africa', 'Africa']);
 }
 
 function getHost(url = '') {
@@ -665,6 +925,200 @@ function getHost(url = '') {
   } catch {
     return '';
   }
+}
+
+function guessProvinceFromLocation(location = '') {
+  const text = normalizeLower(location);
+
+  if (
+    /tzaneen|lenyenye|nkowankowa|maake|letsitele|modjadjiskloof|haenertsburg|polokwane|phalaborwa|hoedspruit|makhado|louis trichardt|musina|messina|limpopo/.test(
+      text
+    )
+  ) {
+    return 'Limpopo';
+  }
+
+  if (/johannesburg|pretoria|tshwane|gauteng|soweto|sandton|midrand|centurion|ekurhuleni/.test(text)) {
+    return 'Gauteng';
+  }
+
+  if (/durban|pietermaritzburg|kwazulu|kzn/.test(text)) {
+    return 'KwaZulu-Natal';
+  }
+
+  if (/cape town|western cape/.test(text)) {
+    return 'Western Cape';
+  }
+
+  if (/gqeberha|port elizabeth|east london|eastern cape/.test(text)) {
+    return 'Eastern Cape';
+  }
+
+  if (/bloemfontein|free state/.test(text)) {
+    return 'Free State';
+  }
+
+  if (/rustenburg|mahikeng|north west/.test(text)) {
+    return 'North West';
+  }
+
+  if (/mbombela|nelspruit|emalahleni|witbank|mpumalanga/.test(text)) {
+    return 'Mpumalanga';
+  }
+
+  if (/kimberley|northern cape/.test(text)) {
+    return 'Northern Cape';
+  }
+
+  if (/south africa/.test(text)) {
+    return 'South Africa';
+  }
+
+  return '';
+}
+
+function isLikelyForeignJob(job = {}) {
+  const text = normalizeLower(
+    `${job.title || ''} ${job.company || ''} ${job.area || ''} ${job.location || ''} ${job.town || ''} ${job.province || ''} ${job.salary || ''} ${job.description || ''} ${job.applyUrl || ''} ${job.apply_url || ''}`
+  );
+
+  const host = getHost(job.applyUrl || job.apply_url || job.sourceUrl || job.source_url);
+
+  const foreignSignals = [
+    'united states',
+    'usa',
+    'canada',
+    'australia',
+    'new zealand',
+    'united kingdom',
+    'england',
+    'scotland',
+    'ireland',
+    'germany',
+    'france',
+    'netherlands',
+    'india',
+    'pakistan',
+    'philippines',
+    ', pa',
+    ', md',
+    ', ny',
+    ', tx',
+    ', ca',
+    ', fl',
+    ', va',
+    ', oh',
+    ', il',
+    ', ga',
+    ', nc',
+    ', sc',
+    ', az',
+    ', wa',
+    ', mi',
+    ', mn',
+    'cdl',
+    'per mile',
+    'per week',
+    'per hour',
+    'usd',
+    'us$',
+    '$',
+  ];
+
+  if (foreignSignals.some((signal) => text.includes(signal))) return true;
+
+  if (
+    host.endsWith('.us') ||
+    host.endsWith('.uk') ||
+    host.endsWith('.ca') ||
+    host.endsWith('.au') ||
+    host.includes('indeed.com') ||
+    host.includes('ziprecruiter.com') ||
+    host.includes('monster.com')
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function hasSouthAfricaSignal(job = {}) {
+  const text = normalizeLower(
+    `${job.title || ''} ${job.company || ''} ${job.area || ''} ${job.location || ''} ${job.town || ''} ${job.province || ''} ${job.salary || ''} ${job.description || ''} ${job.applyUrl || ''}`
+  );
+
+  const signals = [
+    'south africa',
+    'limpopo',
+    'tzaneen',
+    'lenyenye',
+    'nkowankowa',
+    'maake',
+    'letsitele',
+    'modjadjiskloof',
+    'polokwane',
+    'phalaborwa',
+    'hoedspruit',
+    'makhado',
+    'musina',
+    'johannesburg',
+    'pretoria',
+    'gauteng',
+    'durban',
+    'cape town',
+    'mpumalanga',
+    'north west',
+    'free state',
+    'eastern cape',
+    'western cape',
+    'northern cape',
+    'kwazulu',
+    'kzn',
+    'zar',
+    ' r',
+  ];
+
+  return signals.some((signal) => text.includes(signal));
+}
+
+function hasAfricaSignal(job = {}) {
+  const text = normalizeLower(
+    `${job.title || ''} ${job.company || ''} ${job.area || ''} ${job.location || ''} ${job.town || ''} ${job.province || ''} ${job.description || ''}`
+  );
+
+  const signals = AFRICA_LOCATIONS.map((item) => item.toLowerCase());
+
+  return signals.some((signal) => text.includes(signal)) || hasSouthAfricaSignal(job);
+}
+
+function isAllowedGeography(job = {}, requestedArea = '', provider = '') {
+  const requested = normalizeLower(requestedArea);
+
+  if (provider === 'adzuna') return true;
+
+  if (isLikelyForeignJob(job)) return false;
+
+  if (!requested || requested === 'jobs') {
+    return hasSouthAfricaSignal(job) || hasAfricaSignal(job);
+  }
+
+  if (requested === 'africa') {
+    return hasAfricaSignal(job);
+  }
+
+  if (isNonSouthAfricaAfricanArea(requestedArea)) {
+    const text = normalizeLower(
+      `${job.area || ''} ${job.location || ''} ${job.town || ''} ${job.province || ''} ${job.description || ''}`
+    );
+
+    return text.includes(requested);
+  }
+
+  if (isSouthAfricaArea(requestedArea)) {
+    return hasSouthAfricaSignal(job);
+  }
+
+  return hasAfricaSignal(job) || hasSouthAfricaSignal(job);
 }
 
 function normalizeVerificationStatus(value) {
@@ -749,7 +1203,7 @@ function normalizeJob(job = {}) {
       job.city ||
       job.location_display ||
       job.locationDisplay ||
-      'South Africa'
+      ''
   );
 
   const applyUrl = normalizeText(
@@ -776,15 +1230,20 @@ function normalizeJob(job = {}) {
 
   const sourceType = normalizeSourceType(job.sourceType || job.source_type || job.sourceLabel);
 
+  const province =
+    normalizeText(job.province) ||
+    guessProvinceFromLocation(area) ||
+    (hasSouthAfricaSignal({ ...job, area }) ? 'South Africa' : '');
+
   return {
     id,
     external_source: normalizeText(job.external_source || job.externalSource || 'manual'),
     external_id: normalizeText(job.external_id || job.externalId || id),
     title,
     company,
-    area,
-    town: normalizeText(job.town || area),
-    province: normalizeText(job.province || 'South Africa'),
+    area: area || province || 'Location not stated',
+    town: normalizeText(job.town || area || province || 'Location not stated'),
+    province,
     category,
     salary: normalizeText(job.salary || job.salary_text || job.salaryText) || null,
     deadline: normalizeText(job.deadline || job.closing_date || job.closingDate) || null,
@@ -816,10 +1275,13 @@ function normalizeJob(job = {}) {
     createdAt: normalizeText(job.createdAt || job.created_at || job.updated) || new Date().toISOString(),
     updatedAt: normalizeText(job.updatedAt || job.updated_at) || new Date().toISOString(),
     trustScore: safeNumber(job.trustScore || job.trust_score, verificationStatus === 'verified' ? 85 : 60),
+    foundBy: Array.isArray(job.foundBy) ? job.foundBy : [],
+    searchLocation: normalizeText(job.searchLocation || ''),
+    searchKeyword: normalizeText(job.searchKeyword || ''),
   };
 }
 
-function normalizeAdzunaJob(job = {}, area = 'South Africa') {
+function normalizeAdzunaJob(job = {}, area = 'South Africa', searchKeyword = '') {
   const company = normalizeText(job?.company?.display_name || job?.company || 'Company not stated');
   const location = normalizeText(job?.location?.display_name || area);
   const category = normalizeText(job?.category?.label || 'Job opportunity');
@@ -833,8 +1295,8 @@ function normalizeAdzunaJob(job = {}, area = 'South Africa') {
     title: job.title,
     company,
     area: location,
-    town: area,
-    province: 'South Africa',
+    town: location,
+    province: guessProvinceFromLocation(location) || 'South Africa',
     category: category || guessCategoryFromText(`${job.title} ${description}`),
     salary:
       job.salary_min && job.salary_max
@@ -851,25 +1313,28 @@ function normalizeAdzunaJob(job = {}, area = 'South Africa') {
     description,
     createdAt: job.created || new Date().toISOString(),
     trustScore: 65,
+    searchLocation: area,
+    searchKeyword,
   });
 }
 
-function normalizeJoobleJob(job = {}, area = 'South Africa') {
+function normalizeJoobleJob(job = {}, area = 'South Africa', searchKeyword = '') {
   const applyUrl = normalizeText(job.link || job.url);
   const company = normalizeText(job.company || job.companyName || job.source || 'Company not stated');
   const title = normalizeText(job.title || 'Job opportunity');
-  const location = normalizeText(job.location || area);
+  const location = normalizeText(job.location || '');
   const description = cleanDescription(job.snippet || job.description || '');
+  const province = guessProvinceFromLocation(location);
 
   return normalizeJob({
-    id: `jooble-${job.id || `${title}-${company}-${location}`}`,
+    id: `jooble-${job.id || `${title}-${company}-${location}-${applyUrl}`}`,
     external_source: 'jooble',
     external_id: normalizeText(job.id || applyUrl || `${title}-${company}-${location}`),
     title,
     company,
     area: location,
     town: location,
-    province: location.includes('Limpopo') ? 'Limpopo' : 'South Africa',
+    province,
     category: normalizeText(job.type) || guessCategoryFromText(`${title} ${description}`),
     salary: normalizeText(job.salary) || null,
     deadline: null,
@@ -883,6 +1348,8 @@ function normalizeJoobleJob(job = {}, area = 'South Africa') {
     description,
     createdAt: job.updated || new Date().toISOString(),
     trustScore: 62,
+    searchLocation: area,
+    searchKeyword,
   });
 }
 
@@ -895,7 +1362,7 @@ function normalizeManualJob(job = {}) {
     company: job.company,
     area: job.location || job.area || 'Remote',
     town: job.location || job.area || 'Remote',
-    province: 'South Africa',
+    province: guessProvinceFromLocation(job.location || job.area) || 'South Africa',
     category: job.type || job.category || 'Job opportunity',
     salary: job.salary || null,
     deadline: job.deadline || null,
@@ -914,6 +1381,7 @@ function normalizeManualJob(job = {}) {
 
 function jobIdentity(job = {}) {
   const host = getHost(job.applyUrl || job.apply_url || job.sourceUrl || job.source_url);
+
   const title = normalizeLower(job.title)
     .replace(/\bjob\b/g, '')
     .replace(/\bvacancy\b/g, '')
@@ -946,15 +1414,31 @@ function isDuplicateJob(a = {}, b = {}) {
   if (x.url && y.url && x.url === y.url) return true;
   if (x.key === y.key) return true;
 
-  const sameCompany = x.company && y.company && (x.company.includes(y.company) || y.company.includes(x.company));
-  const sameTitle = x.title && y.title && (x.title.includes(y.title) || y.title.includes(x.title));
+  const sameCompany =
+    x.company &&
+    y.company &&
+    (x.company.includes(y.company) || y.company.includes(x.company));
+
+  const sameTitle =
+    x.title &&
+    y.title &&
+    (x.title.includes(y.title) || y.title.includes(x.title));
+
   const sameHost = x.host && y.host && x.host === y.host;
 
   return Boolean(sameCompany && sameTitle && (sameHost || x.area === y.area));
 }
 
-function mergeJobsSmart({ manualJobs = [], databaseJobs = [], adzunaJobs = [], joobleJobs = [], officialCards = [] }) {
+function mergeJobsSmart({
+  manualJobs = [],
+  databaseJobs = [],
+  adzunaJobs = [],
+  joobleJobs = [],
+  officialCards = [],
+}) {
   const merged = [];
+  let joobleAddedUnique = 0;
+  let joobleDuplicates = 0;
 
   function add(job, reason = '') {
     const normalized = normalizeJob(job);
@@ -962,11 +1446,20 @@ function mergeJobsSmart({ manualJobs = [], databaseJobs = [], adzunaJobs = [], j
 
     if (duplicate) {
       duplicate.foundBy = Array.from(
-        new Set([...(duplicate.foundBy || []), ...(normalized.foundBy || []), normalized.external_source])
+        new Set([
+          ...(duplicate.foundBy || []),
+          ...(normalized.foundBy || []),
+          normalized.external_source,
+        ])
       ).filter(Boolean);
 
       duplicate.matchNote = duplicate.matchNote || reason || 'Duplicate found from another source';
-      return;
+
+      if (normalized.external_source === 'jooble') {
+        joobleDuplicates += 1;
+      }
+
+      return false;
     }
 
     merged.push({
@@ -974,15 +1467,25 @@ function mergeJobsSmart({ manualJobs = [], databaseJobs = [], adzunaJobs = [], j
       foundBy: Array.from(new Set([normalized.external_source].filter(Boolean))),
       matchNote: reason || '',
     });
+
+    if (normalized.external_source === 'jooble') {
+      joobleAddedUnique += 1;
+    }
+
+    return true;
   }
 
   manualJobs.forEach((job) => add(job, 'FaceMeX local employer job'));
   databaseJobs.forEach((job) => add(job, 'Saved job from FaceMeX database'));
   adzunaJobs.forEach((job) => add(job, 'Found by Adzuna'));
-  joobleJobs.forEach((job) => add(job, 'Added by Jooble because it was not already found by Adzuna'));
+  joobleJobs.forEach((job) => add(job, 'Added by Jooble because Adzuna did not already find this job'));
   officialCards.forEach((job) => add(job, 'Trusted official apply page'));
 
-  return merged;
+  return {
+    jobs: merged,
+    joobleAddedUnique,
+    joobleDuplicates,
+  };
 }
 
 function scoreJob(job = {}, query = '', area = '') {
@@ -1000,13 +1503,21 @@ function scoreJob(job = {}, query = '', area = '') {
 
   if (job.verificationStatus === 'verified' || job.verification_status === 'verified') score += 40;
   if (job.sourceType === 'facemex_verified_local_employer') score += 50;
-  if (job.sourceType === 'adzuna_job_api') score += 34;
-  if (job.sourceType === 'jooble_job_api') score += 32;
+  if (job.sourceType === 'adzuna_job_api') score += 36;
+  if (job.sourceType === 'jooble_job_api') score += 35;
   if (job.sourceType === 'official_company_source' || job.sourceType === 'government_public_institution') score += 30;
   if (job.applyUrl || job.apply_url) score += 20;
 
   if (area && text.includes(normalizeLower(area))) score += 35;
-  if (normalizeLower(area) === 'tzaneen' && /tzaneen|lenyenye|nkowankowa|maake|letsitele|modjadjiskloof/.test(text)) {
+
+  if (
+    normalizeLower(area) === 'tzaneen' &&
+    /tzaneen|lenyenye|nkowankowa|maake|letsitele|modjadjiskloof|haenertsburg/.test(text)
+  ) {
+    score += 25;
+  }
+
+  if (isLimpopoArea(area) && /limpopo|tzaneen|polokwane|phalaborwa|hoedspruit|makhado|musina/.test(text)) {
     score += 20;
   }
 
@@ -1049,7 +1560,8 @@ function filterJobsByIntent(list = [], query = '', area = '') {
       a === 'africa' ||
       text.includes(a) ||
       text.includes('remote') ||
-      text.includes('south africa');
+      text.includes('south africa') ||
+      text.includes('limpopo');
 
     const keywordMatch =
       keywordTokens.length === 0 || keywordTokens.some((token) => text.includes(token));
@@ -1058,7 +1570,7 @@ function filterJobsByIntent(list = [], query = '', area = '') {
   });
 }
 
-async function searchAdzuna({ query = 'jobs', area = 'Tzaneen', page = 1, limit = 20 } = {}) {
+async function searchAdzunaOnce({ query = 'jobs', area = 'Tzaneen', page = 1, limit = 20 } = {}) {
   if (!adzunaConfigured()) {
     return {
       ok: false,
@@ -1069,7 +1581,7 @@ async function searchAdzuna({ query = 'jobs', area = 'Tzaneen', page = 1, limit 
     };
   }
 
-  if (isNonSouthAfricaArea(area)) {
+  if (isNonSouthAfricaAfricanArea(area)) {
     return {
       ok: true,
       source: 'adzuna',
@@ -1077,15 +1589,17 @@ async function searchAdzuna({ query = 'jobs', area = 'Tzaneen', page = 1, limit 
       error: null,
       jobs: [],
       total: 0,
-      message: 'Adzuna ZA skipped because this looks outside South Africa.',
+      message: 'Adzuna ZA skipped because this location is outside South Africa.',
     };
   }
+
+  const adzunaArea = normalizeLower(area) === 'africa' ? 'South Africa' : area;
 
   const url = new URL(`https://api.adzuna.com/v1/api/jobs/za/search/${page}`);
   url.searchParams.set('app_id', ADZUNA_APP_ID);
   url.searchParams.set('app_key', ADZUNA_APP_KEY);
   url.searchParams.set('what', query || 'jobs');
-  url.searchParams.set('where', area || 'South Africa');
+  url.searchParams.set('where', adzunaArea || 'South Africa');
   url.searchParams.set('results_per_page', String(Math.min(Math.max(Number(limit) || 20, 1), 50)));
   url.searchParams.set('sort_by', 'date');
   url.searchParams.set('content-type', 'application/json');
@@ -1111,11 +1625,71 @@ async function searchAdzuna({ query = 'jobs', area = 'Tzaneen', page = 1, limit 
     source: 'adzuna',
     error: null,
     total: Number(data?.count || results.length),
-    jobs: results.map((item) => normalizeAdzunaJob(item, area)).filter((job) => job.applyUrl),
+    jobs: results
+      .map((item) => normalizeAdzunaJob(item, adzunaArea, query))
+      .filter((job) => job.applyUrl)
+      .filter((job) => isAllowedGeography(job, adzunaArea, 'adzuna')),
   };
 }
 
-async function searchJooble({ query = 'jobs', area = 'Tzaneen', page = 1, limit = 20 } = {}) {
+async function searchAdzunaSmart({ query = 'jobs', area = 'Tzaneen', limit = 40 } = {}) {
+  const locations = expandSearchLocations(area).filter((location) => {
+    if (normalizeLower(location) === 'africa') return false;
+    if (isNonSouthAfricaAfricanArea(location)) return false;
+    return true;
+  });
+
+  const variants = keywordVariants(query).slice(0, 3);
+  const jobsFound = [];
+  const attempts = [];
+  const warnings = [];
+
+  for (const location of locations) {
+    for (const keyword of variants) {
+      if (jobsFound.length >= limit) break;
+
+      const result = await searchAdzunaOnce({
+        query: keyword,
+        area: location,
+        page: 1,
+        limit: Math.min(limit, 50),
+      });
+
+      attempts.push({
+        provider: 'adzuna',
+        keyword,
+        location,
+        ok: result.ok,
+        count: result.jobs?.length || 0,
+        total: result.total || 0,
+        skipped: Boolean(result.skipped),
+        error: result.error || null,
+      });
+
+      if (result.ok && Array.isArray(result.jobs)) {
+        for (const job of result.jobs) {
+          if (!jobsFound.some((existing) => isDuplicateJob(existing, job))) {
+            jobsFound.push(job);
+          }
+        }
+      } else if (result.error) {
+        warnings.push(`Adzuna ${keyword} in ${location}: ${result.error}`);
+      }
+
+      await sleep(150);
+    }
+  }
+
+  return {
+    ok: true,
+    source: 'adzuna_smart',
+    jobs: jobsFound.slice(0, limit),
+    attempts,
+    warnings,
+  };
+}
+
+async function searchJoobleOnce({ query = 'jobs', area = 'Tzaneen', page = 1, limit = 20 } = {}) {
   if (!joobleConfigured()) {
     return {
       ok: false,
@@ -1160,12 +1734,71 @@ async function searchJooble({ query = 'jobs', area = 'Tzaneen', page = 1, limit 
 
   const results = Array.isArray(data?.jobs) ? data.jobs : [];
 
+  const normalizedJobs = results
+    .map((item) => normalizeJoobleJob(item, area, query))
+    .filter((job) => job.applyUrl)
+    .filter((job) => isAllowedGeography(job, area, 'jooble'));
+
   return {
     ok: true,
     source: 'jooble',
     error: null,
     total: Number(data?.totalCount || data?.total || results.length),
-    jobs: results.map((item) => normalizeJoobleJob(item, area)).filter((job) => job.applyUrl),
+    rawCount: results.length,
+    jobs: normalizedJobs,
+  };
+}
+
+async function searchJoobleSmart({ query = 'jobs', area = 'Tzaneen', limit = 40 } = {}) {
+  const locations = expandSearchLocations(area);
+  const variants = keywordVariants(query).slice(0, 4);
+
+  const jobsFound = [];
+  const attempts = [];
+  const warnings = [];
+
+  for (const location of locations) {
+    for (const keyword of variants) {
+      if (jobsFound.length >= limit) break;
+
+      const result = await searchJoobleOnce({
+        query: keyword,
+        area: location,
+        page: 1,
+        limit: Math.min(limit, 50),
+      });
+
+      attempts.push({
+        provider: 'jooble',
+        keyword,
+        location,
+        ok: result.ok,
+        count: result.jobs?.length || 0,
+        rawCount: result.rawCount || 0,
+        total: result.total || 0,
+        error: result.error || null,
+      });
+
+      if (result.ok && Array.isArray(result.jobs)) {
+        for (const job of result.jobs) {
+          if (!jobsFound.some((existing) => isDuplicateJob(existing, job))) {
+            jobsFound.push(job);
+          }
+        }
+      } else if (result.error) {
+        warnings.push(`Jooble ${keyword} in ${location}: ${result.error}`);
+      }
+
+      await sleep(150);
+    }
+  }
+
+  return {
+    ok: true,
+    source: 'jooble_smart',
+    jobs: jobsFound.slice(0, limit),
+    attempts,
+    warnings,
   };
 }
 
@@ -1287,7 +1920,7 @@ function validateRefreshSecret(req) {
 async function runCombinedJobSearch({
   rawQuery = 'jobs',
   area = 'Tzaneen',
-  limit = 50,
+  limit = 80,
   includeAdzuna = true,
   includeJooble = true,
   includeOfficialSources = true,
@@ -1300,6 +1933,8 @@ async function runCombinedJobSearch({
   let manualJobs = [];
   let adzunaJobs = [];
   let joobleJobs = [];
+  let adzunaAttempts = [];
+  let joobleAttempts = [];
 
   manualJobs = filterJobsByIntent(jobs.map(normalizeManualJob), query, searchArea);
 
@@ -1315,79 +1950,83 @@ async function runCombinedJobSearch({
 
   const [adzunaResult, joobleResult] = await Promise.allSettled([
     includeAdzuna
-      ? searchAdzuna({
+      ? searchAdzunaSmart({
           query,
           area: searchArea,
-          page: 1,
-          limit: Math.min(limit, 50),
+          limit: Math.min(limit, 60),
         })
-      : Promise.resolve({ ok: true, source: 'adzuna', jobs: [], total: 0 }),
+      : Promise.resolve({ ok: true, source: 'adzuna_smart', jobs: [], attempts: [], warnings: [] }),
 
     includeJooble
-      ? searchJooble({
+      ? searchJoobleSmart({
           query,
           area: searchArea,
-          page: 1,
-          limit: Math.min(limit, 50),
+          limit: Math.min(limit, 60),
         })
-      : Promise.resolve({ ok: true, source: 'jooble', jobs: [], total: 0 }),
+      : Promise.resolve({ ok: true, source: 'jooble_smart', jobs: [], attempts: [], warnings: [] }),
   ]);
 
   let adzunaMeta = {
     ok: false,
-    total: 0,
-    skipped: false,
+    count: 0,
     error: null,
   };
 
   let joobleMeta = {
     ok: false,
-    total: 0,
+    count: 0,
     error: null,
   };
 
   if (adzunaResult.status === 'fulfilled') {
-    adzunaMeta = {
-      ok: adzunaResult.value.ok,
-      total: adzunaResult.value.total || 0,
-      skipped: Boolean(adzunaResult.value.skipped),
-      error: adzunaResult.value.error || null,
-    };
     adzunaJobs = adzunaResult.value.jobs || [];
+    adzunaAttempts = adzunaResult.value.attempts || [];
 
-    if (!adzunaResult.value.ok && adzunaResult.value.error) {
-      warnings.push(`Adzuna search failed: ${adzunaResult.value.error}`);
+    adzunaMeta = {
+      ok: true,
+      count: adzunaJobs.length,
+      error: null,
+    };
+
+    if (adzunaResult.value.warnings?.length) {
+      warnings.push(...adzunaResult.value.warnings);
     }
   } else {
-    warnings.push(`Adzuna search failed: ${adzunaResult.reason?.message || 'Unknown error'}`);
+    adzunaMeta.error = adzunaResult.reason?.message || 'Adzuna failed';
+    warnings.push(`Adzuna search failed: ${adzunaMeta.error}`);
   }
 
   if (joobleResult.status === 'fulfilled') {
-    joobleMeta = {
-      ok: joobleResult.value.ok,
-      total: joobleResult.value.total || 0,
-      error: joobleResult.value.error || null,
-    };
     joobleJobs = joobleResult.value.jobs || [];
+    joobleAttempts = joobleResult.value.attempts || [];
 
-    if (!joobleResult.value.ok && joobleResult.value.error) {
-      warnings.push(`Jooble search failed: ${joobleResult.value.error}`);
+    joobleMeta = {
+      ok: true,
+      count: joobleJobs.length,
+      error: null,
+    };
+
+    if (joobleResult.value.warnings?.length) {
+      warnings.push(...joobleResult.value.warnings);
     }
   } else {
-    warnings.push(`Jooble search failed: ${joobleResult.reason?.message || 'Unknown error'}`);
+    joobleMeta.error = joobleResult.reason?.message || 'Jooble failed';
+    warnings.push(`Jooble search failed: ${joobleMeta.error}`);
   }
 
   const officialCards = includeOfficialSources ? officialCardsForArea(searchArea) : [];
 
-  const merged = mergeJobsSmart({
+  const hasLiveResults = manualJobs.length || databaseJobs.length || adzunaJobs.length || joobleJobs.length;
+
+  const mergedResult = mergeJobsSmart({
     manualJobs,
     databaseJobs,
     adzunaJobs,
     joobleJobs,
-    officialCards: manualJobs.length || databaseJobs.length || adzunaJobs.length || joobleJobs.length ? [] : officialCards,
+    officialCards: hasLiveResults ? [] : officialCards,
   });
 
-  const sorted = sortJobs(merged, query, searchArea).slice(0, limit);
+  const sorted = sortJobs(mergedResult.jobs, query, searchArea).slice(0, limit);
 
   const saveResult = await saveJobsToSupabase(sorted);
 
@@ -1397,13 +2036,17 @@ async function runCombinedJobSearch({
     query,
     rawQuery,
     area: searchArea,
+    searchPath: expandSearchLocations(searchArea),
+    keywordPath: keywordVariants(query),
     count: sorted.length,
     sources: {
       manual: manualJobs.length,
       supabase: databaseJobs.length,
       adzuna: adzunaJobs.length,
       jooble: joobleJobs.length,
-      officialCards: manualJobs.length || databaseJobs.length || adzunaJobs.length || joobleJobs.length ? 0 : officialCards.length,
+      joobleAddedUnique: mergedResult.joobleAddedUnique,
+      joobleDuplicatesSkipped: mergedResult.joobleDuplicates,
+      officialCards: hasLiveResults ? 0 : officialCards.length,
     },
     providerStatus: {
       supabaseConfigured: supabaseConfigured(),
@@ -1411,6 +2054,10 @@ async function runCombinedJobSearch({
       joobleConfigured: joobleConfigured(),
       adzuna: adzunaMeta,
       jooble: joobleMeta,
+    },
+    attempts: {
+      adzuna: adzunaAttempts,
+      jooble: joobleAttempts,
     },
     savedToSupabase: saveResult.saved,
     saveError: saveResult.error || null,
@@ -1431,8 +2078,8 @@ router.get('/', (_req, res) => {
     joobleConfigured: joobleConfigured(),
     hasRefreshSecret: Boolean(JOB_REFRESH_SECRET),
     localEmployerPosts: jobs.length,
+    searchStrategy: 'village_township_to_town_city_to_province_to_south_africa_to_africa',
     priorityAreas: PRIORITY_AREAS,
-    africaLocations: AFRICA_LOCATIONS,
     jobTypes: JOB_TYPE_KEYWORDS,
     liveSearchCooldownMinutes: LIVE_SEARCH_COOLDOWN_MINUTES,
   });
@@ -1449,7 +2096,10 @@ router.get('/health', (_req, res) => {
     table: SUPABASE_JOBS_TABLE,
     localEmployerPosts: jobs.length,
     applications: applications.length,
-    priorityAreas: PRIORITY_AREAS,
+    searchStrategy: 'village_township_to_town_city_to_province_to_south_africa_to_africa',
+    localVillagesTownships: GREATER_TZANEEN_VILLAGES_TOWNSHIPS,
+    limpopoTownsCities: LIMPOPO_TOWNS_CITIES,
+    southAfricaLocations: SOUTH_AFRICA_PROVINCES_AND_CITIES,
     africaLocations: AFRICA_LOCATIONS,
     jobTypes: JOB_TYPE_KEYWORDS,
   });
@@ -1464,29 +2114,28 @@ router.get('/adzuna-test', async (req, res) => {
   const area = normalizeText(req.query.area || req.query.where || 'Tzaneen');
 
   try {
-    const result = await searchAdzuna({
+    const result = await searchAdzunaSmart({
       query,
       area,
-      page: 1,
-      limit: 20,
+      limit: 50,
     });
 
     return res.json({
       ok: result.ok,
-      source: 'adzuna',
+      source: 'adzuna_smart',
       adzunaConfigured: adzunaConfigured(),
       query,
       area,
+      searchPath: expandSearchLocations(area),
       count: result.jobs.length,
-      total: result.total,
-      skipped: Boolean(result.skipped),
-      error: result.error || null,
+      attempts: result.attempts,
+      warnings: result.warnings,
       jobs: result.jobs,
     });
   } catch (error) {
     return res.status(500).json({
       ok: false,
-      source: 'adzuna',
+      source: 'adzuna_smart',
       adzunaConfigured: adzunaConfigured(),
       error: error?.message || 'Adzuna test failed.',
       jobs: [],
@@ -1503,28 +2152,28 @@ router.get('/jooble-test', async (req, res) => {
   const area = normalizeText(req.query.area || req.query.where || 'Tzaneen');
 
   try {
-    const result = await searchJooble({
+    const result = await searchJoobleSmart({
       query,
       area,
-      page: 1,
-      limit: 20,
+      limit: 50,
     });
 
     return res.json({
       ok: result.ok,
-      source: 'jooble',
+      source: 'jooble_smart',
       joobleConfigured: joobleConfigured(),
       query,
       area,
+      searchPath: expandSearchLocations(area),
       count: result.jobs.length,
-      total: result.total,
-      error: result.error || null,
+      attempts: result.attempts,
+      warnings: result.warnings,
       jobs: result.jobs,
     });
   } catch (error) {
     return res.status(500).json({
       ok: false,
-      source: 'jooble',
+      source: 'jooble_smart',
       joobleConfigured: joobleConfigured(),
       error: error?.message || 'Jooble test failed.',
       jobs: [],
@@ -1556,6 +2205,9 @@ router.get('/list', (_req, res) => {
   3. Adzuna live jobs
   4. Jooble live jobs
   5. Official source cards if no live result exists
+
+  Location path:
+  village/township -> town/city -> province -> South Africa -> Africa
 */
 router.get('/auto-search', async (req, res) => {
   const rawQuery = normalizeText(req.query.query || req.query.q || 'jobs');
@@ -1620,6 +2272,7 @@ router.get('/discover', async (req, res) => {
   const selectedTypes = JOB_TYPE_KEYWORDS.slice(0, maxTypes);
   const allJobs = [];
   const warnings = [];
+  const attempts = [];
 
   for (const keyword of selectedTypes) {
     try {
@@ -1633,6 +2286,12 @@ router.get('/discover', async (req, res) => {
       });
 
       allJobs.push(...result.jobs);
+      attempts.push({
+        keyword,
+        count: result.jobs.length,
+        sources: result.sources,
+      });
+
       if (result.warnings?.length) warnings.push(...result.warnings);
       await sleep(500);
     } catch (error) {
@@ -1640,25 +2299,25 @@ router.get('/discover', async (req, res) => {
     }
   }
 
-  const merged = mergeJobsSmart({
-    adzunaJobs: allJobs.filter((job) => job.external_source === 'adzuna'),
-    joobleJobs: allJobs.filter((job) => job.external_source === 'jooble'),
-    databaseJobs: allJobs.filter((job) => job.external_source !== 'adzuna' && job.external_source !== 'jooble'),
+  const mergedResult = mergeJobsSmart({
+    databaseJobs: allJobs,
     officialCards: [],
   });
 
-  const sorted = sortJobs(merged, 'jobs', area).slice(0, 100);
+  const sorted = sortJobs(mergedResult.jobs, 'jobs', area).slice(0, 100);
   const saveResult = await saveJobsToSupabase(sorted);
 
   return res.json({
     ok: true,
     source: 'facemex_discover_jobs',
     area,
+    searchPath: expandSearchLocations(area),
     searchedTypes: selectedTypes,
     count: sorted.length,
     savedToSupabase: saveResult.saved,
     saveError: saveResult.error || null,
     warnings,
+    attempts,
     jobs: sorted,
   });
 });
@@ -1692,7 +2351,7 @@ router.get('/refresh-test', async (req, res) => {
     return res.json({
       ...result,
       source: 'refresh_test',
-      message: 'Refresh test completed with Adzuna + Jooble.',
+      message: 'Refresh test completed with Adzuna + Jooble using village-to-Africa search path.',
     });
   } catch (error) {
     return res.status(500).json({
@@ -1709,7 +2368,7 @@ router.get('/refresh-test', async (req, res) => {
 
   Body:
   {
-    "areas": ["Tzaneen", "Polokwane"],
+    "areas": ["Lenyenye", "Tzaneen", "Limpopo"],
     "queries": ["jobs", "driver", "cashier", "farm"],
     "limit": 30
   }
@@ -1726,16 +2385,44 @@ router.post('/refresh', async (req, res) => {
 
   const areas = Array.isArray(body.areas) && body.areas.length
     ? body.areas.map(normalizeText).filter(Boolean)
-    : ['Tzaneen', 'Polokwane', 'Phalaborwa', 'Hoedspruit', 'Makhado', 'Limpopo'];
+    : [
+        'Lenyenye',
+        'Nkowankowa',
+        'Maake',
+        'Tzaneen',
+        'Letsitele',
+        'Modjadjiskloof',
+        'Polokwane',
+        'Phalaborwa',
+        'Hoedspruit',
+        'Makhado',
+        'Musina',
+        'Limpopo',
+        'South Africa',
+      ];
 
   const queries = Array.isArray(body.queries) && body.queries.length
     ? body.queries.map(normalizeText).filter(Boolean)
-    : ['jobs', 'general worker', 'cashier', 'driver', 'admin', 'security', 'farm', 'packhouse'];
+    : [
+        'jobs',
+        'general worker',
+        'cashier',
+        'driver',
+        'admin',
+        'security',
+        'cleaner',
+        'farm',
+        'packhouse',
+        'retail',
+        'learnership',
+        'internship',
+      ];
 
   const limit = Math.min(Math.max(Number(body.limit || 30), 1), 80);
 
   const allJobs = [];
   const warnings = [];
+  const refreshSummary = [];
 
   for (const area of areas) {
     for (const query of queries) {
@@ -1751,6 +2438,15 @@ router.post('/refresh', async (req, res) => {
 
         allJobs.push(...result.jobs);
 
+        refreshSummary.push({
+          area,
+          query,
+          count: result.jobs.length,
+          adzuna: result.sources?.adzuna || 0,
+          jooble: result.sources?.jooble || 0,
+          joobleAddedUnique: result.sources?.joobleAddedUnique || 0,
+        });
+
         if (result.warnings?.length) {
           warnings.push(...result.warnings);
         }
@@ -1762,25 +2458,25 @@ router.post('/refresh', async (req, res) => {
     }
   }
 
-  const merged = mergeJobsSmart({
-    adzunaJobs: allJobs.filter((job) => job.external_source === 'adzuna'),
-    joobleJobs: allJobs.filter((job) => job.external_source === 'jooble'),
-    databaseJobs: allJobs.filter((job) => job.external_source !== 'adzuna' && job.external_source !== 'jooble'),
+  const mergedResult = mergeJobsSmart({
+    databaseJobs: allJobs,
     officialCards: [],
   });
 
-  const sorted = sortJobs(merged, 'jobs', areas[0]).slice(0, 250);
+  const sorted = sortJobs(mergedResult.jobs, 'jobs', areas[0]).slice(0, 300);
   const saveResult = await saveJobsToSupabase(sorted);
 
   return res.json({
     ok: true,
     source: 'facemex_jobs_refresh',
+    searchStrategy: 'village_township_to_town_city_to_province_to_south_africa_to_africa',
     areas,
     queries,
     found: sorted.length,
     saved: saveResult.saved,
     saveError: saveResult.error || null,
     warnings,
+    refreshSummary,
     message: 'FaceMeX jobs refreshed successfully with Adzuna + Jooble.',
   });
 });
