@@ -280,6 +280,10 @@ function clean(value) {
   return String(value || '').trim();
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function normalizeArea(value) {
   const area = clean(value);
 
@@ -434,7 +438,7 @@ function normalizeAdzunaJob(job, areaFallback) {
   };
 }
 
-async function fetchAdzunaJobs({ query, area, pages = 2 }) {
+async function fetchAdzunaJobs({ query, area, pages = 1 }) {
   if (!process.env.ADZUNA_APP_ID || !process.env.ADZUNA_APP_KEY) {
     return [];
   }
@@ -629,7 +633,7 @@ router.get('/auto-search', async (req, res) => {
         const liveJobs = await fetchAdzunaJobs({
           query,
           area,
-          pages: 2,
+          pages: 1,
         });
 
         try {
@@ -701,11 +705,45 @@ router.post('/refresh', async (req, res) => {
 
     await saveOfficialSourceCards();
 
-    const allJobs = [];
     const warnings = [];
+    const allJobs = [];
 
-    for (const area of PRIORITY_AREAS) {
-      for (const keyword of DEFAULT_KEYWORDS) {
+    /*
+      IMPORTANT:
+      This refresh is intentionally lighter to avoid Adzuna 429 Too Many Requests.
+      It searches the strongest areas and strongest keywords only.
+      Users can still search specific jobs live through /auto-search.
+    */
+    const refreshAreas = [
+      'Tzaneen',
+      'Polokwane',
+      'Phalaborwa',
+      'Hoedspruit',
+      'Makhado',
+      'Musina',
+      'Limpopo',
+      'South Africa',
+    ];
+
+    const refreshKeywords = [
+      'jobs',
+      'general worker',
+      'cashier',
+      'driver',
+      'admin',
+      'security',
+      'retail',
+      'learnership',
+    ];
+
+    let rateLimited = false;
+
+    for (const area of refreshAreas) {
+      if (rateLimited) break;
+
+      for (const keyword of refreshKeywords) {
+        if (rateLimited) break;
+
         try {
           const liveJobs = await fetchAdzunaJobs({
             query: keyword,
@@ -714,6 +752,11 @@ router.post('/refresh', async (req, res) => {
           });
 
           allJobs.push(...liveJobs);
+
+          /*
+            Slow down requests to avoid Adzuna rate limit.
+          */
+          await sleep(1800);
         } catch (error) {
           const message = `Adzuna refresh failed for ${keyword} in ${area}: ${
             error?.message || error
@@ -721,6 +764,16 @@ router.post('/refresh', async (req, res) => {
 
           console.error(message);
           warnings.push(message);
+
+          if (String(error?.message || '').includes('429')) {
+            rateLimited = true;
+            warnings.push(
+              'Adzuna rate limit reached. Saved the jobs already found. Try refresh again later.'
+            );
+            break;
+          }
+
+          await sleep(2500);
         }
       }
     }
@@ -749,11 +802,12 @@ router.post('/refresh', async (req, res) => {
 
     return res.json({
       ok: true,
-      searchedAreas: PRIORITY_AREAS.length,
-      searchedKeywords: DEFAULT_KEYWORDS.length,
+      searchedAreas: refreshAreas.length,
+      searchedKeywords: refreshKeywords.length,
       foundBeforeUnique: allJobs.length,
       uniqueFound: unique.size,
       saved: saved.length,
+      rateLimited,
       warnings,
       message: 'FaceMeX jobs refreshed successfully.',
     });
