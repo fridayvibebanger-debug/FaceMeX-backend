@@ -31,7 +31,7 @@ function hasTier(user, minTier) {
 }
 
 /*
-  NEW AUTOMATIC JOB ENGINE
+  SUPABASE + AUTOMATIC JOB ENGINE
 */
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -59,25 +59,17 @@ const PRIORITY_AREAS = [
 
 const DEFAULT_KEYWORDS = [
   'jobs',
-  'cashier',
-  'packer',
-  'clerk',
   'general worker',
+  'cashier',
+  'driver',
   'admin',
   'security',
-  'driver',
-  'teacher',
-  'cleaner',
   'retail',
-  'farm',
-  'packhouse',
   'learnership',
-  'internship',
-  'waiter',
-  'waitress',
-  'shop assistant',
-  'store assistant',
 ];
+
+const AUTO_SEARCH_LIVE_COOLDOWN_MS = 10 * 60 * 1000;
+const liveSearchCooldown = new Map();
 
 const OFFICIAL_SOURCE_CARDS = [
   {
@@ -288,7 +280,6 @@ function normalizeArea(value) {
   const area = clean(value);
 
   if (!area) return 'Tzaneen';
-
   if (/messina/i.test(area)) return 'Musina';
 
   return area;
@@ -360,7 +351,7 @@ function mapJobForFrontend(job) {
     verificationStatus: job.verification_status || 'needs_verification',
     actionLabel: job.verification_status === 'verified' ? 'Apply Now' : 'Verify First',
     createdAt: job.created_at || null,
-    isSourceCard: false,
+    isSourceCard: job.external_source === 'official_source',
   };
 }
 
@@ -451,7 +442,7 @@ async function fetchAdzunaJobs({ query, area, pages = 1 }) {
 
     if (!response.ok) {
       const text = await response.text().catch(() => '');
-      throw new Error(`Adzuna failed ${response.status}: ${text.slice(0, 160)}`);
+      throw new Error(`Adzuna failed ${response.status}: ${text.slice(0, 180)}`);
     }
 
     const data = await response.json();
@@ -530,15 +521,15 @@ async function searchSupabaseJobs({ query, area, limit = 80 }) {
   const { data, error } = await supabase
     .from('facemex_jobs')
     .select('*')
-    .eq('is_active', true)
-    .order('created_at', { ascending: false })
-    .limit(500);
+    .order('updated_at', { ascending: false })
+    .limit(800);
 
   if (error) throw error;
 
   const dbJobs = data || [];
 
   return dbJobs
+    .filter((job) => job.is_active !== false)
     .filter((job) => textMatchesArea(job, area))
     .filter((job) => textMatchesQuery(job, query))
     .sort((a, b) => {
@@ -584,8 +575,23 @@ function getFallbackSourceCards({ area }) {
   return localFirst.length ? localFirst : OFFICIAL_SOURCE_CARDS;
 }
 
+function liveSearchKey(query, area) {
+  return `${normalizeQuery(query).toLowerCase()}__${normalizeArea(area).toLowerCase()}`;
+}
+
+function canTryLiveSearch(query, area) {
+  const key = liveSearchKey(query, area);
+  const last = liveSearchCooldown.get(key) || 0;
+
+  return Date.now() - last > AUTO_SEARCH_LIVE_COOLDOWN_MS;
+}
+
+function markLiveSearchTried(query, area) {
+  liveSearchCooldown.set(liveSearchKey(query, area), Date.now());
+}
+
 /*
-  NEW ROUTES FOR JOB AI
+  JOB AI ROUTES
 */
 router.get('/status', (_req, res) => {
   res.json({
@@ -596,6 +602,7 @@ router.get('/status', (_req, res) => {
     hasRefreshSecret: !!process.env.JOB_REFRESH_SECRET,
     localEmployerPosts: jobs.length,
     priorityAreas: PRIORITY_AREAS,
+    liveSearchCooldownMinutes: AUTO_SEARCH_LIVE_COOLDOWN_MS / 60000,
   });
 });
 
@@ -628,8 +635,15 @@ router.get('/auto-search', async (req, res) => {
       warnings.push(`Supabase search failed: ${error?.message || 'Unknown error'}`);
     }
 
-    if (dbJobs.length < 10 && process.env.ADZUNA_APP_ID && process.env.ADZUNA_APP_KEY) {
+    if (
+      dbJobs.length < 5 &&
+      process.env.ADZUNA_APP_ID &&
+      process.env.ADZUNA_APP_KEY &&
+      canTryLiveSearch(query, area)
+    ) {
       try {
+        markLiveSearchTried(query, area);
+
         const liveJobs = await fetchAdzunaJobs({
           query,
           area,
@@ -657,6 +671,8 @@ router.get('/auto-search', async (req, res) => {
         console.error('Adzuna live search failed:', error?.message || error);
         warnings.push(`Adzuna failed: ${error?.message || 'Unknown error'}`);
       }
+    } else if (dbJobs.length < 5) {
+      warnings.push('Live external search cooldown active or Adzuna not configured. Showing trusted source cards.');
     }
 
     const frontendDbJobs = dbJobs.map(mapJobForFrontend);
@@ -674,7 +690,8 @@ router.get('/auto-search', async (req, res) => {
       area,
       count: combined.length + fallbackCards.length,
       employerPosts: employerJobs.length,
-      databaseJobs: frontendDbJobs.length,
+      databaseJobs: frontendDbJobs.filter((job) => !job.isSourceCard).length,
+      databaseSourceCards: frontendDbJobs.filter((job) => job.isSourceCard).length,
       fallbackCards: fallbackCards.length,
       warnings,
       jobs: [...combined, ...fallbackCards],
@@ -688,6 +705,83 @@ router.get('/auto-search', async (req, res) => {
       query,
       area,
       jobs: getFallbackSourceCards({ area }).map(sourceCardToFrontend),
+    });
+  }
+});
+
+/*
+  TEMPORARY BROWSER TEST ROUTE
+  Use this on your phone browser:
+  /api/jobs/refresh-test?secret=YOUR_SECRET&area=Tzaneen&query=jobs
+
+  Do not share this link. Remove it later when cron is working.
+*/
+router.get('/refresh-test', async (req, res) => {
+  try {
+    const secret = String(req.query.secret || '').trim();
+
+    if (!process.env.JOB_REFRESH_SECRET || secret !== process.env.JOB_REFRESH_SECRET) {
+      return res.status(401).json({
+        ok: false,
+        error: 'Unauthorized job refresh test.',
+      });
+    }
+
+    const area = normalizeArea(req.query.area || 'Tzaneen');
+    const query = normalizeQuery(req.query.query || 'jobs');
+
+    await saveOfficialSourceCards();
+
+    let liveJobs = [];
+
+    try {
+      liveJobs = await fetchAdzunaJobs({
+        query,
+        area,
+        pages: 1,
+      });
+    } catch (error) {
+      return res.json({
+        ok: false,
+        source: 'refresh_test',
+        area,
+        query,
+        found: 0,
+        saved: 0,
+        error: error?.message || 'Adzuna refresh test failed.',
+        note: 'If this says 429 Too Many Requests, wait 1 hour before testing again.',
+      });
+    }
+
+    let saved = [];
+
+    try {
+      saved = await upsertJobs(liveJobs);
+    } catch (error) {
+      return res.status(500).json({
+        ok: false,
+        source: 'refresh_test',
+        area,
+        query,
+        found: liveJobs.length,
+        saved: 0,
+        error: `Supabase save failed: ${error?.message || 'Unknown error'}`,
+      });
+    }
+
+    return res.json({
+      ok: true,
+      source: 'refresh_test',
+      area,
+      query,
+      found: liveJobs.length,
+      saved: saved.length,
+      message: 'Refresh test completed.',
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: error?.message || 'Refresh test failed.',
     });
   }
 });
@@ -708,12 +802,6 @@ router.post('/refresh', async (req, res) => {
     const warnings = [];
     const allJobs = [];
 
-    /*
-      IMPORTANT:
-      This refresh is intentionally lighter to avoid Adzuna 429 Too Many Requests.
-      It searches the strongest areas and strongest keywords only.
-      Users can still search specific jobs live through /auto-search.
-    */
     const refreshAreas = [
       'Tzaneen',
       'Polokwane',
@@ -725,16 +813,7 @@ router.post('/refresh', async (req, res) => {
       'South Africa',
     ];
 
-    const refreshKeywords = [
-      'jobs',
-      'general worker',
-      'cashier',
-      'driver',
-      'admin',
-      'security',
-      'retail',
-      'learnership',
-    ];
+    const refreshKeywords = DEFAULT_KEYWORDS;
 
     let rateLimited = false;
 
@@ -753,10 +832,7 @@ router.post('/refresh', async (req, res) => {
 
           allJobs.push(...liveJobs);
 
-          /*
-            Slow down requests to avoid Adzuna rate limit.
-          */
-          await sleep(1800);
+          await sleep(2200);
         } catch (error) {
           const message = `Adzuna refresh failed for ${keyword} in ${area}: ${
             error?.message || error
@@ -773,7 +849,7 @@ router.post('/refresh', async (req, res) => {
             break;
           }
 
-          await sleep(2500);
+          await sleep(3000);
         }
       }
     }
