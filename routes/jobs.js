@@ -12,21 +12,21 @@ let applications = [];
 jobs = (await loadJSON('jobs.json', jobs)) || jobs;
 applications = (await loadJSON('jobApplications.json', applications)) || applications;
 
-const toStr = (v) => (v == null ? '' : String(v));
+const toStr = (value) => (value == null ? '' : String(value));
 
 /*
-  ENV VARIABLES NEEDED ON RENDER
-
-  ADZUNA_APP_ID=...
-  ADZUNA_APP_KEY=...
+  RENDER ENV VARIABLES NEEDED
 
   SUPABASE_URL=...
   SUPABASE_SERVICE_ROLE_KEY=...
 
-  JOB_REFRESH_SECRET=...
+  ADZUNA_APP_ID=...
+  ADZUNA_APP_KEY=...
 
-  GOOGLE_SEARCH_API_KEY=...
-  GOOGLE_SEARCH_ENGINE_ID=...
+  JOOBLE_API_KEY=...
+  JOOBLE_ENABLED=true
+
+  JOB_REFRESH_SECRET=...
 */
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '';
@@ -41,16 +41,23 @@ const SUPABASE_JOBS_TABLE = process.env.SUPABASE_JOBS_TABLE || 'jobs';
 const ADZUNA_APP_ID = process.env.ADZUNA_APP_ID || '';
 const ADZUNA_APP_KEY = process.env.ADZUNA_APP_KEY || '';
 
-const GOOGLE_SEARCH_API_KEY = process.env.GOOGLE_SEARCH_API_KEY || '';
-const GOOGLE_SEARCH_ENGINE_ID =
-  process.env.GOOGLE_SEARCH_ENGINE_ID ||
-  process.env.GOOGLE_CSE_ID ||
-  process.env.GOOGLE_SEARCH_CX ||
-  '';
+const JOOBLE_API_KEY = process.env.JOOBLE_API_KEY || '';
+const JOOBLE_ENABLED = process.env.JOOBLE_ENABLED !== 'false';
+const JOOBLE_API_BASE = process.env.JOOBLE_API_BASE || 'https://jooble.org/api';
 
 const JOB_REFRESH_SECRET = process.env.JOB_REFRESH_SECRET || '';
-
 const LIVE_SEARCH_COOLDOWN_MINUTES = Number(process.env.LIVE_SEARCH_COOLDOWN_MINUTES || 10);
+
+let supabase = null;
+
+if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
+  supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  });
+}
 
 const PRIORITY_AREAS = [
   'Tzaneen',
@@ -66,39 +73,129 @@ const PRIORITY_AREAS = [
   'Makhado',
   'Musina',
   'Messina',
+  'Limpopo',
+  'Gauteng',
+  'Johannesburg',
+  'Pretoria',
+  'Durban',
+  'Cape Town',
+  'South Africa',
+  'Africa',
 ];
 
-const MAIN_JOB_KEYWORDS = [
+const AFRICA_LOCATIONS = [
+  'South Africa',
+  'Zimbabwe',
+  'Botswana',
+  'Namibia',
+  'Mozambique',
+  'Zambia',
+  'Malawi',
+  'Lesotho',
+  'Eswatini',
+  'Swaziland',
+  'Kenya',
+  'Nigeria',
+  'Ghana',
+  'Tanzania',
+  'Uganda',
+  'Rwanda',
+  'Ethiopia',
+  'Egypt',
+  'Morocco',
+  'Africa',
+];
+
+const NON_SA_AFRICA_LOCATIONS = AFRICA_LOCATIONS.filter(
+  (area) => !['South Africa', 'Africa'].includes(area)
+);
+
+const JOB_TYPE_KEYWORDS = [
   'jobs',
   'general worker',
   'cashier',
   'packer',
-  'admin',
-  'clerk',
-  'driver',
-  'security',
+  'picker',
   'cleaner',
+  'admin',
+  'administrator',
+  'clerk',
+  'data capturer',
+  'receptionist',
+  'driver',
+  'code 10 driver',
+  'code 14 driver',
+  'delivery driver',
+  'courier',
+  'security',
+  'guard',
   'retail',
+  'sales assistant',
   'store assistant',
+  'shop assistant',
+  'merchandiser',
+  'promoter',
+  'call centre',
+  'customer service',
+  'warehouse',
+  'logistics',
+  'forklift',
   'farm',
+  'agriculture',
   'packhouse',
+  'packing',
+  'irrigation',
+  'tractor driver',
+  'hospitality',
+  'hotel',
+  'restaurant',
+  'waiter',
+  'waitress',
+  'chef',
+  'kitchen assistant',
+  'housekeeping',
+  'tourism',
+  'construction',
+  'builder',
+  'plumber',
+  'electrician',
+  'mechanic',
+  'artisan',
+  'welder',
+  'mining',
+  'plant operator',
+  'healthcare',
+  'nurse',
+  'caregiver',
+  'clinic',
+  'pharmacy',
+  'teaching',
   'teacher assistant',
+  'creche',
+  'crèche',
+  'educare',
+  'school assistant',
   'learnership',
   'internship',
+  'graduate',
+  'apprenticeship',
+  'IT',
+  'software',
+  'computer',
+  'technician',
+  'finance',
+  'bookkeeper',
+  'accounting',
+  'HR',
+  'human resources',
+  'marketing',
+  'social media',
+  'remote',
+  'part time',
+  'full time',
+  'temporary',
+  'permanent',
 ];
-
-const liveSearchCache = new Map();
-
-let supabase = null;
-
-if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
-  supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-    },
-  });
-}
 
 const OFFICIAL_JOB_SOURCE_CARDS = [
   {
@@ -111,37 +208,10 @@ const OFFICIAL_JOB_SOURCE_CARDS = [
     town: 'South Africa',
     province: 'South Africa',
     category: 'Retail',
-    salary: null,
-    deadline: null,
     applyUrl: 'https://apply.shoprite.jobs/',
     apply_url: 'https://apply.shoprite.jobs/',
     sourceUrl: 'https://apply.shoprite.jobs/',
     source_url: 'https://apply.shoprite.jobs/',
-    sourceLabel: 'Official Company Source',
-    source_label: 'Official Company Source',
-    sourceType: 'official_company_source',
-    source_type: 'official_company_source',
-    verificationStatus: 'verified',
-    verification_status: 'verified',
-    actionLabel: 'Open Official Page',
-    isSourceCard: true,
-  },
-  {
-    id: 'shoprite-careers',
-    external_source: 'official_source',
-    external_id: 'shoprite-careers',
-    title: 'Shoprite Group Careers',
-    company: 'Shoprite Group',
-    area: 'South Africa',
-    town: 'South Africa',
-    province: 'South Africa',
-    category: 'Retail',
-    salary: null,
-    deadline: null,
-    applyUrl: 'https://www.shopriteholdings.co.za/careers.html',
-    apply_url: 'https://www.shopriteholdings.co.za/careers.html',
-    sourceUrl: 'https://www.shopriteholdings.co.za/careers.html',
-    source_url: 'https://www.shopriteholdings.co.za/careers.html',
     sourceLabel: 'Official Company Source',
     source_label: 'Official Company Source',
     sourceType: 'official_company_source',
@@ -160,9 +230,7 @@ const OFFICIAL_JOB_SOURCE_CARDS = [
     area: 'Tzaneen / Limpopo',
     town: 'Tzaneen',
     province: 'Limpopo',
-    category: 'Agriculture',
-    salary: null,
-    deadline: null,
+    category: 'Agriculture / Packhouse',
     applyUrl: 'https://www.westfaliafruit.com/careers',
     apply_url: 'https://www.westfaliafruit.com/careers',
     sourceUrl: 'https://www.westfaliafruit.com/careers',
@@ -185,9 +253,7 @@ const OFFICIAL_JOB_SOURCE_CARDS = [
     area: 'Tzaneen / Mooketsi / Limpopo',
     town: 'Tzaneen',
     province: 'Limpopo',
-    category: 'Agriculture',
-    salary: null,
-    deadline: null,
+    category: 'Agriculture / Farm / Packhouse',
     applyUrl: 'https://recruit.zz2.co.za/vacancies',
     apply_url: 'https://recruit.zz2.co.za/vacancies',
     sourceUrl: 'https://recruit.zz2.co.za/vacancies',
@@ -210,9 +276,7 @@ const OFFICIAL_JOB_SOURCE_CARDS = [
     area: 'South Africa / Limpopo',
     town: 'Limpopo',
     province: 'Limpopo',
-    category: 'Food / Manufacturing',
-    salary: null,
-    deadline: null,
+    category: 'Food / Manufacturing / Sales',
     applyUrl: 'https://rclfoods.com/careers/',
     apply_url: 'https://rclfoods.com/careers/',
     sourceUrl: 'https://rclfoods.com/careers/',
@@ -227,17 +291,15 @@ const OFFICIAL_JOB_SOURCE_CARDS = [
     isSourceCard: true,
   },
   {
-    id: 'ppebc-careers',
+    id: 'ppecb-careers',
     external_source: 'official_source',
-    external_id: 'ppebc-careers',
+    external_id: 'ppecb-careers',
     title: 'PPECB Careers',
     company: 'PPECB',
     area: 'South Africa / Limpopo',
     town: 'Limpopo',
     province: 'Limpopo',
     category: 'Agriculture / Inspection / Admin',
-    salary: null,
-    deadline: null,
     applyUrl: 'https://ppecb.simplify.hr/',
     apply_url: 'https://ppecb.simplify.hr/',
     sourceUrl: 'https://ppecb.simplify.hr/',
@@ -261,8 +323,6 @@ const OFFICIAL_JOB_SOURCE_CARDS = [
     town: 'Limpopo',
     province: 'Limpopo',
     category: 'Government / Health',
-    salary: null,
-    deadline: null,
     applyUrl: 'https://www.ldoh.gov.za/?q=node/11',
     apply_url: 'https://www.ldoh.gov.za/?q=node/11',
     sourceUrl: 'https://www.ldoh.gov.za/?q=node/11',
@@ -285,9 +345,7 @@ const OFFICIAL_JOB_SOURCE_CARDS = [
     area: 'Tzaneen',
     town: 'Tzaneen',
     province: 'Limpopo',
-    category: 'Government',
-    salary: null,
-    deadline: null,
+    category: 'Government / Municipality',
     applyUrl: 'https://www.greatertzaneen.gov.za/?q=current_vacancies',
     apply_url: 'https://www.greatertzaneen.gov.za/?q=current_vacancies',
     sourceUrl: 'https://www.greatertzaneen.gov.za/?q=current_vacancies',
@@ -310,9 +368,7 @@ const OFFICIAL_JOB_SOURCE_CARDS = [
     area: 'Polokwane',
     town: 'Polokwane',
     province: 'Limpopo',
-    category: 'Government',
-    salary: null,
-    deadline: null,
+    category: 'Government / Municipality',
     applyUrl: 'https://apply.polokwane.gov.za/',
     apply_url: 'https://apply.polokwane.gov.za/',
     sourceUrl: 'https://apply.polokwane.gov.za/',
@@ -335,9 +391,7 @@ const OFFICIAL_JOB_SOURCE_CARDS = [
     area: 'Phalaborwa',
     town: 'Phalaborwa',
     province: 'Limpopo',
-    category: 'Government',
-    salary: null,
-    deadline: null,
+    category: 'Government / Municipality',
     applyUrl: 'https://www.phalaborwa.gov.za/vacancies/vacancies.php',
     apply_url: 'https://www.phalaborwa.gov.za/vacancies/vacancies.php',
     sourceUrl: 'https://www.phalaborwa.gov.za/vacancies/vacancies.php',
@@ -360,9 +414,7 @@ const OFFICIAL_JOB_SOURCE_CARDS = [
     area: 'Hoedspruit',
     town: 'Hoedspruit',
     province: 'Limpopo',
-    category: 'Government',
-    salary: null,
-    deadline: null,
+    category: 'Government / Municipality',
     applyUrl: 'https://www.maruleng.gov.za/pages/vacancies.php',
     apply_url: 'https://www.maruleng.gov.za/pages/vacancies.php',
     sourceUrl: 'https://www.maruleng.gov.za/pages/vacancies.php',
@@ -385,9 +437,7 @@ const OFFICIAL_JOB_SOURCE_CARDS = [
     area: 'Makhado',
     town: 'Makhado',
     province: 'Limpopo',
-    category: 'Government',
-    salary: null,
-    deadline: null,
+    category: 'Government / Municipality',
     applyUrl: 'https://www.makhado.gov.za/?q=advertisedvacancies',
     apply_url: 'https://www.makhado.gov.za/?q=advertisedvacancies',
     sourceUrl: 'https://www.makhado.gov.za/?q=advertisedvacancies',
@@ -410,9 +460,7 @@ const OFFICIAL_JOB_SOURCE_CARDS = [
     area: 'Musina',
     town: 'Musina',
     province: 'Limpopo',
-    category: 'Government',
-    salary: null,
-    deadline: null,
+    category: 'Government / Municipality',
     applyUrl: 'https://www.musina.gov.za/vacancies-musina-municipality/',
     apply_url: 'https://www.musina.gov.za/vacancies-musina-municipality/',
     sourceUrl: 'https://www.musina.gov.za/vacancies-musina-municipality/',
@@ -432,12 +480,10 @@ const OFFICIAL_JOB_SOURCE_CARDS = [
     external_id: 'sayouth-opportunities',
     title: 'SAYouth Opportunities',
     company: 'SAYouth',
-    area: 'South Africa / Youth Opportunities',
+    area: 'South Africa',
     town: 'South Africa',
     province: 'South Africa',
-    category: 'Youth / Learnerships',
-    salary: null,
-    deadline: null,
+    category: 'Youth / Learnership / Entry Level',
     applyUrl: 'https://sayouth.mobi/',
     apply_url: 'https://sayouth.mobi/',
     sourceUrl: 'https://sayouth.mobi/',
@@ -461,17 +507,19 @@ const tierOrder = {
   exclusive: 4,
 };
 
+const liveSearchCache = new Map();
+
 function hasTier(user, minTier) {
-  const t = user?.tier || 'free';
-  return (tierOrder[t] ?? 0) >= (tierOrder[minTier] ?? 0);
+  const tier = user?.tier || 'free';
+  return (tierOrder[tier] ?? 0) >= (tierOrder[minTier] ?? 0);
 }
 
 function adzunaConfigured() {
   return Boolean(ADZUNA_APP_ID && ADZUNA_APP_KEY);
 }
 
-function googleConfigured() {
-  return Boolean(GOOGLE_SEARCH_API_KEY && GOOGLE_SEARCH_ENGINE_ID);
+function joobleConfigured() {
+  return Boolean(JOOBLE_ENABLED && JOOBLE_API_KEY);
 }
 
 function supabaseConfigured() {
@@ -487,8 +535,8 @@ function normalizeLower(value) {
 }
 
 function safeNumber(value, fallback = 0) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
 }
 
 function sleep(ms) {
@@ -525,47 +573,90 @@ function saveToCache(query, area, data) {
 
 function detectArea(text = '') {
   const lower = normalizeLower(text);
-  const found = PRIORITY_AREAS.find((area) => lower.includes(area.toLowerCase()));
+  const found = [...PRIORITY_AREAS, ...AFRICA_LOCATIONS].find((area) =>
+    lower.includes(area.toLowerCase())
+  );
+
   return found || 'Tzaneen';
+}
+
+function removeAreaWords(text = '') {
+  let output = normalizeText(text);
+
+  [...PRIORITY_AREAS, ...AFRICA_LOCATIONS].forEach((area) => {
+    output = output.replace(new RegExp(`\\b${area}\\b`, 'gi'), ' ');
+  });
+
+  return output.replace(/\s+/g, ' ').trim();
 }
 
 function detectKeyword(text = '') {
   const lower = normalizeLower(text);
 
-  if (/shoprite|checkers|usave|cashier|packer|retail|store|clerk|shop assistant/i.test(lower)) {
-    return 'cashier clerk packer retail store assistant general worker';
+  if (/shoprite|checkers|usave|cashier|packer|retail|store|shop assistant|sales assistant/i.test(lower)) {
+    return 'cashier packer retail store assistant sales assistant general worker';
   }
 
-  if (/westfalia|zz2|farm|agriculture|packhouse|packing|security|admin/i.test(lower)) {
-    return 'farm agriculture packhouse packing security admin general worker';
+  if (/westfalia|zz2|farm|agriculture|packhouse|packing|picker|irrigation|tractor/i.test(lower)) {
+    return 'farm agriculture packhouse packing picker irrigation tractor driver general worker';
   }
 
-  if (/teacher|creche|crèche|school|educare|daycare/i.test(lower)) {
-    return 'teacher assistant creche daycare school';
+  if (/teacher|creche|crèche|school|educare|daycare|assistant teacher/i.test(lower)) {
+    return 'teacher assistant creche educare daycare school assistant';
   }
 
-  if (/driver|code 10|code 14|pdp|delivery|courier/i.test(lower)) {
-    return 'driver code 10 code 14 delivery courier';
+  if (/driver|code 10|code 14|pdp|delivery|courier|logistics|truck/i.test(lower)) {
+    return 'driver code 10 code 14 delivery courier logistics truck driver';
   }
 
-  const cleaned = normalizeText(text)
-    .replace(/i am looking for/gi, '')
-    .replace(/i'm looking for/gi, '')
-    .replace(/looking for/gi, '')
-    .replace(/show me/gi, '')
-    .replace(/available/gi, '')
-    .replace(/vacancies/gi, '')
-    .replace(/vacancy/gi, '')
-    .replace(/jobs/gi, '')
-    .replace(/job/gi, '')
-    .replace(/work/gi, '')
-    .replace(/in tzaneen/gi, '')
-    .replace(/in polokwane/gi, '')
-    .replace(/in phalaborwa/gi, '')
-    .replace(/in hoedspruit/gi, '')
+  if (/security|guard|reaction|armed response/i.test(lower)) {
+    return 'security guard reaction officer';
+  }
+
+  if (/admin|clerk|reception|data capture|office/i.test(lower)) {
+    return 'admin clerk receptionist data capturer office assistant';
+  }
+
+  if (/cleaner|cleaning|housekeeping|domestic/i.test(lower)) {
+    return 'cleaner cleaning housekeeping domestic worker';
+  }
+
+  if (/learnership|internship|graduate|apprentice|youth/i.test(lower)) {
+    return 'learnership internship graduate apprenticeship youth opportunity';
+  }
+
+  const withoutArea = removeAreaWords(text);
+
+  const cleaned = withoutArea
+    .replace(/\bi am\b/gi, ' ')
+    .replace(/\bi'm\b/gi, ' ')
+    .replace(/\bim\b/gi, ' ')
+    .replace(/\blooking for\b/gi, ' ')
+    .replace(/\blook for\b/gi, ' ')
+    .replace(/\bsearching for\b/gi, ' ')
+    .replace(/\bshow me\b/gi, ' ')
+    .replace(/\bfind me\b/gi, ' ')
+    .replace(/\bfind\b/gi, ' ')
+    .replace(/\bavailable\b/gi, ' ')
+    .replace(/\bvacancies\b/gi, ' ')
+    .replace(/\bvacancy\b/gi, ' ')
+    .replace(/\bjob\b/gi, ' ')
+    .replace(/\bjobs\b/gi, ' ')
+    .replace(/\bwork\b/gi, ' ')
+    .replace(/\bin\b/gi, ' ')
+    .replace(/\bnear\b/gi, ' ')
+    .replace(/\baround\b/gi, ' ')
+    .replace(/\bplease\b/gi, ' ')
+    .replace(/\s+/g, ' ')
     .trim();
 
   return cleaned || 'jobs';
+}
+
+function isNonSouthAfricaArea(area = '') {
+  const lower = normalizeLower(area);
+
+  return NON_SA_AFRICA_LOCATIONS.some((location) => lower.includes(location.toLowerCase()));
 }
 
 function getHost(url = '') {
@@ -574,107 +665,6 @@ function getHost(url = '') {
   } catch {
     return '';
   }
-}
-
-function companyTokens(company = '') {
-  return normalizeLower(company)
-    .replace(/\(pty\)|ltd|limited|careers|group|south africa|sa|pty/g, '')
-    .split(/[^a-z0-9]+/i)
-    .map((token) => token.trim())
-    .filter((token) => token.length >= 3);
-}
-
-function hasCompanyMatch(company = '', text = '') {
-  const tokens = companyTokens(company);
-  const lower = normalizeLower(text);
-  return tokens.some((token) => lower.includes(token));
-}
-
-function knownOfficialDomains(company = '') {
-  const lower = normalizeLower(company);
-
-  if (lower.includes('shoprite') || lower.includes('checkers') || lower.includes('usave')) {
-    return ['shoprite.jobs', 'shopriteholdings.co.za'];
-  }
-
-  if (lower.includes('westfalia')) return ['westfaliafruit.com'];
-  if (lower.includes('zz2')) return ['zz2.co.za', 'recruit.zz2.co.za'];
-  if (lower.includes('rcl')) return ['rclfoods.com'];
-  if (lower.includes('ppecb')) return ['ppecb.com', 'simplify.hr'];
-  if (lower.includes('coca-cola') || lower.includes('coca cola')) return ['ccbagroup.com', 'coca-cola.co.za'];
-  if (lower.includes('tzaneen municipality') || lower.includes('greater tzaneen')) return ['greatertzaneen.gov.za'];
-  if (lower.includes('polokwane')) return ['polokwane.gov.za'];
-  if (lower.includes('phalaborwa')) return ['phalaborwa.gov.za'];
-  if (lower.includes('makhado')) return ['makhado.gov.za'];
-  if (lower.includes('musina')) return ['musina.gov.za'];
-  if (lower.includes('maruleng')) return ['maruleng.gov.za'];
-
-  return [];
-}
-
-function classifyGoogleResults({ company, results = [] }) {
-  const knownDomains = knownOfficialDomains(company);
-
-  const officialResult = results.find((item) => {
-    const host = getHost(item.link);
-    const allText = `${item.title} ${item.link} ${item.snippet} ${item.displayLink}`;
-
-    if (knownDomains.some((domain) => host.includes(domain))) return true;
-
-    if (
-      hasCompanyMatch(company, host) &&
-      !host.includes('facebook') &&
-      !host.includes('indeed') &&
-      !host.includes('adzuna') &&
-      !host.includes('job') &&
-      !host.includes('pnet') &&
-      !host.includes('careers24') &&
-      !host.includes('careerjunction')
-    ) {
-      return true;
-    }
-
-    return hasCompanyMatch(company, allText) && /career|careers|vacanc|job|apply/i.test(allText);
-  });
-
-  const scamResult = results.find((item) => {
-    const text = `${item.title} ${item.snippet} ${item.link}`.toLowerCase();
-    return /scam|fraud|fake|warning|complaint/.test(text);
-  });
-
-  if (scamResult) {
-    return {
-      verificationStatus: 'needs_verification',
-      sourceType: 'external_job_api',
-      sourceLabel: 'Google check found caution signs',
-      trustScore: 45,
-      officialUrl: officialResult?.link || '',
-      warningUrl: scamResult.link,
-      reason: 'Google returned possible caution/scam-related result. User should verify before applying.',
-    };
-  }
-
-  if (officialResult) {
-    return {
-      verificationStatus: 'verified',
-      sourceType: 'official_company_source',
-      sourceLabel: 'Official Company Source',
-      trustScore: 85,
-      officialUrl: officialResult.link,
-      warningUrl: '',
-      reason: 'Google found an official-looking company/source result.',
-    };
-  }
-
-  return {
-    verificationStatus: 'needs_verification',
-    sourceType: 'external_job_api',
-    sourceLabel: 'External job source',
-    trustScore: 60,
-    officialUrl: '',
-    warningUrl: '',
-    reason: 'No clear official company source found from Google search.',
-  };
 }
 
 function normalizeVerificationStatus(value) {
@@ -693,15 +683,46 @@ function normalizeSourceType(value) {
   if (source.includes('government') || source.includes('municipality') || source.includes('public')) {
     return 'government_public_institution';
   }
+  if (source.includes('jooble')) return 'jooble_job_api';
+  if (source.includes('adzuna')) return 'adzuna_job_api';
+  if (source.includes('api') || source.includes('external')) return 'external_job_api';
   if (source.includes('community') || source.includes('screenshot')) {
     return 'community_advert_needs_verification';
-  }
-  if (source.includes('api') || source.includes('adzuna') || source.includes('external')) {
-    return 'external_job_api';
   }
   if (source.includes('risk') || source.includes('avoid')) return 'high_risk_avoid';
 
   return 'official_company_source';
+}
+
+function guessCategoryFromText(text = '') {
+  const lower = normalizeLower(text);
+
+  if (/cashier|retail|shop|store|sales assistant|merchandiser|promoter/.test(lower)) return 'Retail / Sales';
+  if (/farm|agriculture|packhouse|packing|picker|irrigation|tractor/.test(lower)) return 'Agriculture / Packhouse';
+  if (/driver|delivery|courier|logistics|truck|code 10|code 14/.test(lower)) return 'Driver / Logistics';
+  if (/security|guard|reaction|armed response/.test(lower)) return 'Security';
+  if (/admin|clerk|reception|data capturer|office/.test(lower)) return 'Admin / Office';
+  if (/cleaner|cleaning|housekeeping|domestic/.test(lower)) return 'Cleaning / Housekeeping';
+  if (/teacher|creche|school|educare|daycare/.test(lower)) return 'Education / Creche';
+  if (/nurse|caregiver|clinic|health|pharmacy|hospital/.test(lower)) return 'Health / Care';
+  if (/hotel|restaurant|waiter|chef|kitchen|tourism|hospitality/.test(lower)) return 'Hospitality / Tourism';
+  if (/learnership|internship|graduate|apprentice/.test(lower)) return 'Learnership / Internship';
+  if (/it|software|computer|technician|developer/.test(lower)) return 'IT / Technology';
+  if (/finance|account|bookkeeper|payroll/.test(lower)) return 'Finance / Accounting';
+  if (/construction|builder|electrician|plumber|mechanic|welder|artisan/.test(lower)) {
+    return 'Construction / Artisan';
+  }
+
+  return 'Job opportunity';
+}
+
+function cleanDescription(text = '') {
+  return normalizeText(text)
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function normalizeJob(job = {}) {
@@ -737,11 +758,18 @@ function normalizeJob(job = {}) {
       job.application_link ||
       job.redirect_url ||
       job.redirectUrl ||
+      job.link ||
+      job.url ||
       job.sourceUrl ||
       job.source_url
   );
 
   const sourceUrl = normalizeText(job.sourceUrl || job.source_url || applyUrl);
+  const description = cleanDescription(job.description || job.snippet || job.summary || '');
+
+  const fullText = `${title} ${company} ${area} ${description} ${job.category || ''}`;
+  const category = normalizeText(job.category || job.type) || guessCategoryFromText(fullText);
+
   const verificationStatus = normalizeVerificationStatus(
     job.verificationStatus || job.verification_status || job.status
   );
@@ -756,8 +784,8 @@ function normalizeJob(job = {}) {
     company,
     area,
     town: normalizeText(job.town || area),
-    province: normalizeText(job.province || 'Limpopo'),
-    category: normalizeText(job.category || job.type || 'Job opportunity'),
+    province: normalizeText(job.province || 'South Africa'),
+    category,
     salary: normalizeText(job.salary || job.salary_text || job.salaryText) || null,
     deadline: normalizeText(job.deadline || job.closing_date || job.closingDate) || null,
     applyUrl,
@@ -766,20 +794,28 @@ function normalizeJob(job = {}) {
     source_url: sourceUrl,
     sourceLabel:
       normalizeText(job.sourceLabel || job.source_label) ||
-      (sourceType === 'external_job_api' ? 'External job source' : 'Official Company Source'),
+      (sourceType === 'adzuna_job_api'
+        ? 'Adzuna live job source'
+        : sourceType === 'jooble_job_api'
+          ? 'Jooble live job source'
+          : 'External job source'),
     source_label:
       normalizeText(job.sourceLabel || job.source_label) ||
-      (sourceType === 'external_job_api' ? 'External job source' : 'Official Company Source'),
+      (sourceType === 'adzuna_job_api'
+        ? 'Adzuna live job source'
+        : sourceType === 'jooble_job_api'
+          ? 'Jooble live job source'
+          : 'External job source'),
     sourceType,
     source_type: sourceType,
     verificationStatus,
     verification_status: verificationStatus,
-    actionLabel: normalizeText(job.actionLabel || job.action_label) || 'Open Official Page',
+    actionLabel: normalizeText(job.actionLabel || job.action_label) || 'Open Apply Page',
     isSourceCard: Boolean(job.isSourceCard || job.is_source_card),
-    createdAt: normalizeText(job.createdAt || job.created_at) || new Date().toISOString(),
+    description,
+    createdAt: normalizeText(job.createdAt || job.created_at || job.updated) || new Date().toISOString(),
     updatedAt: normalizeText(job.updatedAt || job.updated_at) || new Date().toISOString(),
     trustScore: safeNumber(job.trustScore || job.trust_score, verificationStatus === 'verified' ? 85 : 60),
-    googleVerification: job.googleVerification || job.google_verification || null,
   };
 }
 
@@ -788,6 +824,7 @@ function normalizeAdzunaJob(job = {}, area = 'South Africa') {
   const location = normalizeText(job?.location?.display_name || area);
   const category = normalizeText(job?.category?.label || 'Job opportunity');
   const applyUrl = normalizeText(job?.redirect_url || job?.url);
+  const description = cleanDescription(job?.description || '');
 
   return normalizeJob({
     id: `adzuna-${job.id}`,
@@ -797,19 +834,55 @@ function normalizeAdzunaJob(job = {}, area = 'South Africa') {
     company,
     area: location,
     town: area,
-    province: 'Limpopo',
-    category,
-    salary: job.salary_min && job.salary_max ? `R${job.salary_min} - R${job.salary_max}` : null,
+    province: 'South Africa',
+    category: category || guessCategoryFromText(`${job.title} ${description}`),
+    salary:
+      job.salary_min && job.salary_max
+        ? `R${Math.round(job.salary_min)} - R${Math.round(job.salary_max)}`
+        : null,
     deadline: null,
     applyUrl,
     sourceUrl: applyUrl,
-    sourceLabel: 'Adzuna / External job source',
-    sourceType: 'external_job_api',
+    sourceLabel: 'Adzuna live job source',
+    sourceType: 'adzuna_job_api',
     verificationStatus: 'needs_verification',
-    actionLabel: 'Open Official Page',
+    actionLabel: 'Open Apply Page',
     isSourceCard: false,
+    description,
     createdAt: job.created || new Date().toISOString(),
-    trustScore: 60,
+    trustScore: 65,
+  });
+}
+
+function normalizeJoobleJob(job = {}, area = 'South Africa') {
+  const applyUrl = normalizeText(job.link || job.url);
+  const company = normalizeText(job.company || job.companyName || job.source || 'Company not stated');
+  const title = normalizeText(job.title || 'Job opportunity');
+  const location = normalizeText(job.location || area);
+  const description = cleanDescription(job.snippet || job.description || '');
+
+  return normalizeJob({
+    id: `jooble-${job.id || `${title}-${company}-${location}`}`,
+    external_source: 'jooble',
+    external_id: normalizeText(job.id || applyUrl || `${title}-${company}-${location}`),
+    title,
+    company,
+    area: location,
+    town: location,
+    province: location.includes('Limpopo') ? 'Limpopo' : 'South Africa',
+    category: normalizeText(job.type) || guessCategoryFromText(`${title} ${description}`),
+    salary: normalizeText(job.salary) || null,
+    deadline: null,
+    applyUrl,
+    sourceUrl: applyUrl,
+    sourceLabel: 'Jooble live job source',
+    sourceType: 'jooble_job_api',
+    verificationStatus: 'needs_verification',
+    actionLabel: 'Open Apply Page',
+    isSourceCard: false,
+    description,
+    createdAt: job.updated || new Date().toISOString(),
+    trustScore: 62,
   });
 }
 
@@ -822,7 +895,7 @@ function normalizeManualJob(job = {}) {
     company: job.company,
     area: job.location || job.area || 'Remote',
     town: job.location || job.area || 'Remote',
-    province: 'Limpopo',
+    province: 'South Africa',
     category: job.type || job.category || 'Job opportunity',
     salary: job.salary || null,
     deadline: job.deadline || null,
@@ -833,41 +906,123 @@ function normalizeManualJob(job = {}) {
     verificationStatus: 'verified',
     actionLabel: 'Apply Now',
     isSourceCard: false,
+    description: job.description || '',
     createdAt: job.createdAt || new Date().toISOString(),
     trustScore: 95,
   });
 }
 
-function removeDuplicates(list = []) {
-  const seen = new Set();
+function jobIdentity(job = {}) {
+  const host = getHost(job.applyUrl || job.apply_url || job.sourceUrl || job.source_url);
+  const title = normalizeLower(job.title)
+    .replace(/\bjob\b/g, '')
+    .replace(/\bvacancy\b/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 
-  return list.filter((job) => {
-    const key = [
-      normalizeLower(job.title),
-      normalizeLower(job.company),
-      normalizeLower(job.area),
-      normalizeLower(job.applyUrl || job.apply_url),
-    ].join('|');
+  const company = normalizeLower(job.company)
+    .replace(/\(pty\)/g, '')
+    .replace(/\bltd\b/g, '')
+    .replace(/\blimited\b/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+  const area = normalizeLower(job.area || job.town).replace(/\s+/g, ' ').trim();
+
+  return {
+    title,
+    company,
+    area,
+    host,
+    url: normalizeLower(job.applyUrl || job.apply_url),
+    key: `${title}|${company}|${area}|${host}`,
+  };
 }
 
-function sortJobs(list = []) {
+function isDuplicateJob(a = {}, b = {}) {
+  const x = jobIdentity(a);
+  const y = jobIdentity(b);
+
+  if (x.url && y.url && x.url === y.url) return true;
+  if (x.key === y.key) return true;
+
+  const sameCompany = x.company && y.company && (x.company.includes(y.company) || y.company.includes(x.company));
+  const sameTitle = x.title && y.title && (x.title.includes(y.title) || y.title.includes(x.title));
+  const sameHost = x.host && y.host && x.host === y.host;
+
+  return Boolean(sameCompany && sameTitle && (sameHost || x.area === y.area));
+}
+
+function mergeJobsSmart({ manualJobs = [], databaseJobs = [], adzunaJobs = [], joobleJobs = [], officialCards = [] }) {
+  const merged = [];
+
+  function add(job, reason = '') {
+    const normalized = normalizeJob(job);
+    const duplicate = merged.find((existing) => isDuplicateJob(existing, normalized));
+
+    if (duplicate) {
+      duplicate.foundBy = Array.from(
+        new Set([...(duplicate.foundBy || []), ...(normalized.foundBy || []), normalized.external_source])
+      ).filter(Boolean);
+
+      duplicate.matchNote = duplicate.matchNote || reason || 'Duplicate found from another source';
+      return;
+    }
+
+    merged.push({
+      ...normalized,
+      foundBy: Array.from(new Set([normalized.external_source].filter(Boolean))),
+      matchNote: reason || '',
+    });
+  }
+
+  manualJobs.forEach((job) => add(job, 'FaceMeX local employer job'));
+  databaseJobs.forEach((job) => add(job, 'Saved job from FaceMeX database'));
+  adzunaJobs.forEach((job) => add(job, 'Found by Adzuna'));
+  joobleJobs.forEach((job) => add(job, 'Added by Jooble because it was not already found by Adzuna'));
+  officialCards.forEach((job) => add(job, 'Trusted official apply page'));
+
+  return merged;
+}
+
+function scoreJob(job = {}, query = '', area = '') {
+  const text = normalizeLower(
+    `${job.title} ${job.company} ${job.area} ${job.category} ${job.description || ''}`
+  );
+
+  const queryTokens = normalizeLower(query)
+    .split(/[^a-z0-9]+/i)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 3)
+    .filter((token) => !['jobs', 'job', 'work', 'available'].includes(token));
+
+  let score = 0;
+
+  if (job.verificationStatus === 'verified' || job.verification_status === 'verified') score += 40;
+  if (job.sourceType === 'facemex_verified_local_employer') score += 50;
+  if (job.sourceType === 'adzuna_job_api') score += 34;
+  if (job.sourceType === 'jooble_job_api') score += 32;
+  if (job.sourceType === 'official_company_source' || job.sourceType === 'government_public_institution') score += 30;
+  if (job.applyUrl || job.apply_url) score += 20;
+
+  if (area && text.includes(normalizeLower(area))) score += 35;
+  if (normalizeLower(area) === 'tzaneen' && /tzaneen|lenyenye|nkowankowa|maake|letsitele|modjadjiskloof/.test(text)) {
+    score += 20;
+  }
+
+  queryTokens.forEach((token) => {
+    if (text.includes(token)) score += 15;
+  });
+
+  if (job.isSourceCard || job.is_source_card) score -= 8;
+
+  return score;
+}
+
+function sortJobs(list = [], query = '', area = '') {
   return [...list].sort((a, b) => {
-    const aVerified = a.verificationStatus === 'verified' || a.verification_status === 'verified';
-    const bVerified = b.verificationStatus === 'verified' || b.verification_status === 'verified';
-
-    if (aVerified && !bVerified) return -1;
-    if (!aVerified && bVerified) return 1;
-
-    const aSource = Boolean(a.isSourceCard);
-    const bSource = Boolean(b.isSourceCard);
-
-    if (!aSource && bSource) return -1;
-    if (aSource && !bSource) return 1;
+    const diff = scoreJob(b, query, area) - scoreJob(a, query, area);
+    if (diff !== 0) return diff;
 
     return normalizeText(a.title).localeCompare(normalizeText(b.title));
   });
@@ -885,10 +1040,16 @@ function filterJobsByIntent(list = [], query = '', area = '') {
 
   return list.filter((job) => {
     const text = normalizeLower(
-      `${job.title} ${job.company} ${job.area} ${job.category} ${job.town} ${job.province}`
+      `${job.title} ${job.company} ${job.area} ${job.category} ${job.town} ${job.province} ${job.description || ''}`
     );
 
-    const areaMatch = !a || text.includes(a) || area === 'South Africa';
+    const areaMatch =
+      !a ||
+      a === 'south africa' ||
+      a === 'africa' ||
+      text.includes(a) ||
+      text.includes('remote') ||
+      text.includes('south africa');
 
     const keywordMatch =
       keywordTokens.length === 0 || keywordTokens.some((token) => text.includes(token));
@@ -897,101 +1058,26 @@ function filterJobsByIntent(list = [], query = '', area = '') {
   });
 }
 
-async function googleSearch(query, limit = 5) {
-  if (!googleConfigured()) {
-    return {
-      ok: false,
-      error: 'google_not_configured',
-      items: [],
-    };
-  }
-
-  const url = new URL('https://www.googleapis.com/customsearch/v1');
-  url.searchParams.set('key', GOOGLE_SEARCH_API_KEY);
-  url.searchParams.set('cx', GOOGLE_SEARCH_ENGINE_ID);
-  url.searchParams.set('q', query);
-  url.searchParams.set('num', String(Math.min(Math.max(Number(limit) || 5, 1), 10)));
-
-  const response = await fetch(url.toString());
-  const data = await response.json().catch(() => ({}));
-
-  if (!response.ok) {
-    return {
-      ok: false,
-      error: data?.error?.message || `Google search failed with ${response.status}`,
-      items: [],
-    };
-  }
-
-  return {
-    ok: true,
-    error: null,
-    items: Array.isArray(data?.items)
-      ? data.items.map((item) => ({
-          title: item.title || '',
-          link: item.link || '',
-          snippet: item.snippet || '',
-          displayLink: item.displayLink || '',
-        }))
-      : [],
-  };
-}
-
-async function verifyJobWithGoogle(job) {
-  const normalized = normalizeJob(job);
-
-  if (!googleConfigured()) {
-    return {
-      ...normalized,
-      googleVerification: {
-        ok: false,
-        error: 'google_not_configured',
-        results: [],
-      },
-    };
-  }
-
-  const query = `${normalized.company} ${normalized.title} careers vacancies jobs South Africa official`;
-  const result = await googleSearch(query, 5);
-  const classification = classifyGoogleResults({
-    company: normalized.company,
-    results: result.items,
-  });
-
-  const verifiedJob = {
-    ...normalized,
-    verificationStatus: classification.verificationStatus,
-    verification_status: classification.verificationStatus,
-    sourceType: classification.sourceType,
-    source_type: classification.sourceType,
-    sourceLabel: classification.sourceLabel,
-    source_label: classification.sourceLabel,
-    trustScore: classification.trustScore,
-    googleVerification: {
-      ok: result.ok,
-      query,
-      error: result.error || null,
-      reason: classification.reason,
-      officialUrl: classification.officialUrl || '',
-      warningUrl: classification.warningUrl || '',
-      results: result.items,
-    },
-  };
-
-  if (classification.officialUrl) {
-    verifiedJob.sourceUrl = classification.officialUrl;
-    verifiedJob.source_url = classification.officialUrl;
-  }
-
-  return verifiedJob;
-}
-
 async function searchAdzuna({ query = 'jobs', area = 'Tzaneen', page = 1, limit = 20 } = {}) {
   if (!adzunaConfigured()) {
     return {
       ok: false,
+      source: 'adzuna',
       error: 'adzuna_not_configured',
       jobs: [],
+      total: 0,
+    };
+  }
+
+  if (isNonSouthAfricaArea(area)) {
+    return {
+      ok: true,
+      source: 'adzuna',
+      skipped: true,
+      error: null,
+      jobs: [],
+      total: 0,
+      message: 'Adzuna ZA skipped because this looks outside South Africa.',
     };
   }
 
@@ -1010,12 +1096,11 @@ async function searchAdzuna({ query = 'jobs', area = 'Tzaneen', page = 1, limit 
   if (!response.ok) {
     return {
       ok: false,
-      error:
-        data?.error ||
-        data?.message ||
-        data?.display ||
-        `Adzuna failed ${response.status}: ${toStr(await response.text?.()).slice(0, 200)}`,
+      source: 'adzuna',
+      status: response.status,
+      error: data?.error || data?.message || data?.display || `Adzuna failed with status ${response.status}`,
       jobs: [],
+      total: 0,
     };
   }
 
@@ -1023,9 +1108,64 @@ async function searchAdzuna({ query = 'jobs', area = 'Tzaneen', page = 1, limit 
 
   return {
     ok: true,
+    source: 'adzuna',
     error: null,
-    count: Number(data?.count || results.length),
+    total: Number(data?.count || results.length),
     jobs: results.map((item) => normalizeAdzunaJob(item, area)).filter((job) => job.applyUrl),
+  };
+}
+
+async function searchJooble({ query = 'jobs', area = 'Tzaneen', page = 1, limit = 20 } = {}) {
+  if (!joobleConfigured()) {
+    return {
+      ok: false,
+      source: 'jooble',
+      error: 'jooble_not_configured',
+      jobs: [],
+      total: 0,
+    };
+  }
+
+  const endpoint = `${JOOBLE_API_BASE.replace(/\/$/, '')}/${JOOBLE_API_KEY}`;
+
+  const body = {
+    keywords: query || 'jobs',
+    location: area || 'South Africa',
+    radius: '80',
+    page: Number(page) || 1,
+    ResultOnPage: Math.min(Math.max(Number(limit) || 20, 1), 50),
+  };
+
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    return {
+      ok: false,
+      source: 'jooble',
+      status: response.status,
+      error: data?.error || data?.message || `Jooble failed with status ${response.status}`,
+      jobs: [],
+      total: 0,
+    };
+  }
+
+  const results = Array.isArray(data?.jobs) ? data.jobs : [];
+
+  return {
+    ok: true,
+    source: 'jooble',
+    error: null,
+    total: Number(data?.totalCount || data?.total || results.length),
+    jobs: results.map((item) => normalizeJoobleJob(item, area)).filter((job) => job.applyUrl),
   };
 }
 
@@ -1041,7 +1181,9 @@ async function getJobsFromSupabase({ query = 'jobs', area = 'Tzaneen', limit = 5
 
     if (error) return [];
 
-    const normalized = Array.isArray(data) ? data.map(normalizeJob).filter((job) => job.applyUrl) : [];
+    const normalized = Array.isArray(data)
+      ? data.map(normalizeJob).filter((job) => job.applyUrl || job.apply_url)
+      : [];
 
     return filterJobsByIntent(normalized, query, area);
   } catch {
@@ -1058,30 +1200,40 @@ async function saveJobsToSupabase(list = []) {
     };
   }
 
-  const rows = list.map((job) => {
-    const normalized = normalizeJob(job);
+  const rows = list
+    .filter((job) => !job.isSourceCard && !job.is_source_card)
+    .map((job) => {
+      const normalized = normalizeJob(job);
 
+      return {
+        external_source: normalized.external_source || 'facemex',
+        external_id: normalized.external_id || normalized.id,
+        title: normalized.title,
+        company: normalized.company,
+        area: normalized.area,
+        town: normalized.town,
+        province: normalized.province,
+        category: normalized.category,
+        salary: normalized.salary,
+        deadline: normalized.deadline,
+        apply_url: normalized.applyUrl,
+        source_url: normalized.sourceUrl,
+        source_label: normalized.sourceLabel,
+        source_type: normalized.sourceType,
+        verification_status: normalized.verificationStatus,
+        description: normalized.description || '',
+        last_seen_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+    });
+
+  if (!rows.length) {
     return {
-      external_source: normalized.external_source || 'facemex',
-      external_id: normalized.external_id || normalized.id,
-      title: normalized.title,
-      company: normalized.company,
-      area: normalized.area,
-      town: normalized.town,
-      province: normalized.province,
-      category: normalized.category,
-      salary: normalized.salary,
-      deadline: normalized.deadline,
-      apply_url: normalized.applyUrl,
-      source_url: normalized.sourceUrl,
-      source_label: normalized.sourceLabel,
-      source_type: normalized.sourceType,
-      verification_status: normalized.verificationStatus,
-      description: normalized.googleVerification?.reason || '',
-      last_seen_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
+      ok: false,
+      saved: 0,
+      error: null,
     };
-  });
+  }
 
   try {
     const { error } = await supabase
@@ -1116,7 +1268,7 @@ function officialCardsForArea(area = 'Tzaneen') {
   const lower = normalizeLower(area);
 
   const local = OFFICIAL_JOB_SOURCE_CARDS.filter((job) => {
-    const text = normalizeLower(`${job.area} ${job.town} ${job.company} ${job.title}`);
+    const text = normalizeLower(`${job.area} ${job.town} ${job.company} ${job.title} ${job.category}`);
     return text.includes(lower) || text.includes('south africa') || text.includes('limpopo');
   });
 
@@ -1132,8 +1284,143 @@ function validateRefreshSecret(req) {
   return Boolean(JOB_REFRESH_SECRET && provided && provided === JOB_REFRESH_SECRET);
 }
 
+async function runCombinedJobSearch({
+  rawQuery = 'jobs',
+  area = 'Tzaneen',
+  limit = 50,
+  includeAdzuna = true,
+  includeJooble = true,
+  includeOfficialSources = true,
+} = {}) {
+  const query = detectKeyword(rawQuery);
+  const searchArea = area || detectArea(rawQuery) || 'Tzaneen';
+
+  const warnings = [];
+  let databaseJobs = [];
+  let manualJobs = [];
+  let adzunaJobs = [];
+  let joobleJobs = [];
+
+  manualJobs = filterJobsByIntent(jobs.map(normalizeManualJob), query, searchArea);
+
+  try {
+    databaseJobs = await getJobsFromSupabase({
+      query,
+      area: searchArea,
+      limit,
+    });
+  } catch (error) {
+    warnings.push(`Supabase search failed: ${error?.message || 'Unknown error'}`);
+  }
+
+  const [adzunaResult, joobleResult] = await Promise.allSettled([
+    includeAdzuna
+      ? searchAdzuna({
+          query,
+          area: searchArea,
+          page: 1,
+          limit: Math.min(limit, 50),
+        })
+      : Promise.resolve({ ok: true, source: 'adzuna', jobs: [], total: 0 }),
+
+    includeJooble
+      ? searchJooble({
+          query,
+          area: searchArea,
+          page: 1,
+          limit: Math.min(limit, 50),
+        })
+      : Promise.resolve({ ok: true, source: 'jooble', jobs: [], total: 0 }),
+  ]);
+
+  let adzunaMeta = {
+    ok: false,
+    total: 0,
+    skipped: false,
+    error: null,
+  };
+
+  let joobleMeta = {
+    ok: false,
+    total: 0,
+    error: null,
+  };
+
+  if (adzunaResult.status === 'fulfilled') {
+    adzunaMeta = {
+      ok: adzunaResult.value.ok,
+      total: adzunaResult.value.total || 0,
+      skipped: Boolean(adzunaResult.value.skipped),
+      error: adzunaResult.value.error || null,
+    };
+    adzunaJobs = adzunaResult.value.jobs || [];
+
+    if (!adzunaResult.value.ok && adzunaResult.value.error) {
+      warnings.push(`Adzuna search failed: ${adzunaResult.value.error}`);
+    }
+  } else {
+    warnings.push(`Adzuna search failed: ${adzunaResult.reason?.message || 'Unknown error'}`);
+  }
+
+  if (joobleResult.status === 'fulfilled') {
+    joobleMeta = {
+      ok: joobleResult.value.ok,
+      total: joobleResult.value.total || 0,
+      error: joobleResult.value.error || null,
+    };
+    joobleJobs = joobleResult.value.jobs || [];
+
+    if (!joobleResult.value.ok && joobleResult.value.error) {
+      warnings.push(`Jooble search failed: ${joobleResult.value.error}`);
+    }
+  } else {
+    warnings.push(`Jooble search failed: ${joobleResult.reason?.message || 'Unknown error'}`);
+  }
+
+  const officialCards = includeOfficialSources ? officialCardsForArea(searchArea) : [];
+
+  const merged = mergeJobsSmart({
+    manualJobs,
+    databaseJobs,
+    adzunaJobs,
+    joobleJobs,
+    officialCards: manualJobs.length || databaseJobs.length || adzunaJobs.length || joobleJobs.length ? [] : officialCards,
+  });
+
+  const sorted = sortJobs(merged, query, searchArea).slice(0, limit);
+
+  const saveResult = await saveJobsToSupabase(sorted);
+
+  return {
+    ok: true,
+    source: 'facemex_combined_jobs',
+    query,
+    rawQuery,
+    area: searchArea,
+    count: sorted.length,
+    sources: {
+      manual: manualJobs.length,
+      supabase: databaseJobs.length,
+      adzuna: adzunaJobs.length,
+      jooble: joobleJobs.length,
+      officialCards: manualJobs.length || databaseJobs.length || adzunaJobs.length || joobleJobs.length ? 0 : officialCards.length,
+    },
+    providerStatus: {
+      supabaseConfigured: supabaseConfigured(),
+      adzunaConfigured: adzunaConfigured(),
+      joobleConfigured: joobleConfigured(),
+      adzuna: adzunaMeta,
+      jooble: joobleMeta,
+    },
+    savedToSupabase: saveResult.saved,
+    saveError: saveResult.error || null,
+    warnings,
+    jobs: sorted,
+  };
+}
+
 /*
-  STATUS
+  API STATUS
 */
 router.get('/', (_req, res) => {
   res.json({
@@ -1141,10 +1428,12 @@ router.get('/', (_req, res) => {
     service: 'FaceMeX Jobs API',
     supabaseConfigured: supabaseConfigured(),
     adzunaConfigured: adzunaConfigured(),
-    googleConfigured: googleConfigured(),
+    joobleConfigured: joobleConfigured(),
     hasRefreshSecret: Boolean(JOB_REFRESH_SECRET),
     localEmployerPosts: jobs.length,
     priorityAreas: PRIORITY_AREAS,
+    africaLocations: AFRICA_LOCATIONS,
+    jobTypes: JOB_TYPE_KEYWORDS,
     liveSearchCooldownMinutes: LIVE_SEARCH_COOLDOWN_MINUTES,
   });
 });
@@ -1155,13 +1444,92 @@ router.get('/health', (_req, res) => {
     service: 'FaceMeX Jobs API',
     supabaseConfigured: supabaseConfigured(),
     adzunaConfigured: adzunaConfigured(),
-    googleConfigured: googleConfigured(),
+    joobleConfigured: joobleConfigured(),
     hasRefreshSecret: Boolean(JOB_REFRESH_SECRET),
     table: SUPABASE_JOBS_TABLE,
     localEmployerPosts: jobs.length,
     applications: applications.length,
     priorityAreas: PRIORITY_AREAS,
+    africaLocations: AFRICA_LOCATIONS,
+    jobTypes: JOB_TYPE_KEYWORDS,
   });
+});
+
+/*
+  TEST ADZUNA ONLY
+  /api/jobs/adzuna-test?query=driver&area=Tzaneen
+*/
+router.get('/adzuna-test', async (req, res) => {
+  const query = normalizeText(req.query.query || req.query.q || 'jobs');
+  const area = normalizeText(req.query.area || req.query.where || 'Tzaneen');
+
+  try {
+    const result = await searchAdzuna({
+      query,
+      area,
+      page: 1,
+      limit: 20,
+    });
+
+    return res.json({
+      ok: result.ok,
+      source: 'adzuna',
+      adzunaConfigured: adzunaConfigured(),
+      query,
+      area,
+      count: result.jobs.length,
+      total: result.total,
+      skipped: Boolean(result.skipped),
+      error: result.error || null,
+      jobs: result.jobs,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      source: 'adzuna',
+      adzunaConfigured: adzunaConfigured(),
+      error: error?.message || 'Adzuna test failed.',
+      jobs: [],
+    });
+  }
+});
+
+/*
+  TEST JOOBLE ONLY
+  /api/jobs/jooble-test?query=driver&area=Tzaneen
+*/
+router.get('/jooble-test', async (req, res) => {
+  const query = normalizeText(req.query.query || req.query.q || 'jobs');
+  const area = normalizeText(req.query.area || req.query.where || 'Tzaneen');
+
+  try {
+    const result = await searchJooble({
+      query,
+      area,
+      page: 1,
+      limit: 20,
+    });
+
+    return res.json({
+      ok: result.ok,
+      source: 'jooble',
+      joobleConfigured: joobleConfigured(),
+      query,
+      area,
+      count: result.jobs.length,
+      total: result.total,
+      error: result.error || null,
+      jobs: result.jobs,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      source: 'jooble',
+      joobleConfigured: joobleConfigured(),
+      error: error?.message || 'Jooble test failed.',
+      jobs: [],
+    });
+  }
 });
 
 /*
@@ -1169,6 +1537,7 @@ router.get('/health', (_req, res) => {
 */
 router.get('/list', (_req, res) => {
   const normalized = jobs.map(normalizeManualJob);
+
   res.json({
     ok: true,
     source: 'facemex_manual_jobs',
@@ -1178,114 +1547,27 @@ router.get('/list', (_req, res) => {
 });
 
 /*
-  GOOGLE TEST
-  Test:
-  /api/jobs/google-test?q=Shoprite careers Tzaneen
-*/
-router.get('/google-test', async (req, res) => {
-  const query = normalizeText(req.query.q || 'Shoprite careers South Africa');
+  MAIN AUTO SEARCH
+  /api/jobs/auto-search?query=driver&area=Tzaneen&includeExternal=true&includeOfficialSources=true&limit=80
 
-  try {
-    const result = await googleSearch(query, 5);
-
-    return res.json({
-      ok: result.ok,
-      source: 'google_custom_search',
-      googleConfigured: googleConfigured(),
-      query,
-      count: result.items.length,
-      error: result.error || null,
-      results: result.items,
-    });
-  } catch (error) {
-    return res.status(500).json({
-      ok: false,
-      source: 'google_custom_search',
-      googleConfigured: googleConfigured(),
-      query,
-      error: error?.message || 'Google test failed',
-      results: [],
-    });
-  }
-});
-
-/*
-  VERIFY COMPANY WITH GOOGLE
-  Example:
-  /api/jobs/verify-company?company=Westfalia Fruit&title=Admin Clerk&area=Tzaneen
-*/
-router.get('/verify-company', async (req, res) => {
-  const company = normalizeText(req.query.company || req.query.q || '');
-  const title = normalizeText(req.query.title || 'job vacancies');
-  const area = normalizeText(req.query.area || 'South Africa');
-
-  if (!company) {
-    return res.status(400).json({
-      ok: false,
-      error: 'company_required',
-    });
-  }
-
-  try {
-    const job = normalizeJob({
-      title,
-      company,
-      area,
-      applyUrl: '',
-      sourceType: 'external_job_api',
-      verificationStatus: 'needs_verification',
-    });
-
-    const query = `${company} ${title} ${area} official careers vacancies scam`;
-    const result = await googleSearch(query, 8);
-    const classification = classifyGoogleResults({
-      company,
-      results: result.items,
-    });
-
-    return res.json({
-      ok: result.ok,
-      source: 'google_custom_search',
-      googleConfigured: googleConfigured(),
-      query,
-      company,
-      title,
-      area,
-      verificationStatus: classification.verificationStatus,
-      sourceType: classification.sourceType,
-      sourceLabel: classification.sourceLabel,
-      trustScore: classification.trustScore,
-      officialUrl: classification.officialUrl || null,
-      warningUrl: classification.warningUrl || null,
-      reason: classification.reason,
-      results: result.items,
-      error: result.error || null,
-    });
-  } catch (error) {
-    return res.status(500).json({
-      ok: false,
-      error: error?.message || 'verification_failed',
-    });
-  }
-});
-
-/*
-  AUTOMATIC JOB SEARCH
-  Example:
-  /api/jobs/auto-search?query=security&area=Tzaneen&verify=true&limit=50
+  This searches:
+  1. FaceMeX manual jobs
+  2. Supabase saved jobs
+  3. Adzuna live jobs
+  4. Jooble live jobs
+  5. Official source cards if no live result exists
 */
 router.get('/auto-search', async (req, res) => {
   const rawQuery = normalizeText(req.query.query || req.query.q || 'jobs');
-  const rawArea = normalizeText(req.query.area || req.query.where || detectArea(rawQuery));
-  const query = detectKeyword(rawQuery);
-  const area = rawArea || 'Tzaneen';
+  const area = normalizeText(req.query.area || req.query.where || detectArea(rawQuery) || 'Tzaneen');
 
-  const limit = Math.min(Math.max(Number(req.query.limit || 50), 1), 100);
+  const limit = Math.min(Math.max(Number(req.query.limit || 80), 1), 100);
   const includeExternal = req.query.includeExternal !== 'false';
+  const includeAdzuna = includeExternal && req.query.includeAdzuna !== 'false';
+  const includeJooble = includeExternal && req.query.includeJooble !== 'false';
   const includeOfficialSources = req.query.includeOfficialSources !== 'false';
-  const verifyWithGoogle = req.query.verify !== 'false';
-  const verifyLimit = Math.min(Math.max(Number(req.query.verifyLimit || 3), 0), 5);
 
+  const query = detectKeyword(rawQuery);
   const cached = getFromCache(query, area);
 
   if (cached) {
@@ -1296,108 +1578,94 @@ router.get('/auto-search', async (req, res) => {
     });
   }
 
-  const warnings = [];
-  let databaseJobs = [];
-  let externalJobs = [];
-  let verifiedExternalJobs = [];
-
   try {
-    databaseJobs = await getJobsFromSupabase({ query, area, limit });
+    const result = await runCombinedJobSearch({
+      rawQuery,
+      area,
+      limit,
+      includeAdzuna,
+      includeJooble,
+      includeOfficialSources,
+    });
+
+    saveToCache(query, area, result);
+
+    return res.json({
+      ...result,
+      cached: false,
+    });
   } catch (error) {
-    warnings.push(`Supabase search failed: ${error?.message || 'Unknown error'}`);
+    return res.status(500).json({
+      ok: false,
+      source: 'facemex_combined_jobs',
+      query,
+      area,
+      error: error?.message || 'Auto search failed.',
+      jobs: [],
+    });
   }
+});
 
-  const manualJobs = jobs.map(normalizeManualJob);
-  const filteredManualJobs = filterJobsByIntent(manualJobs, query, area);
+/*
+  SEARCH ALL JOB TYPES IN ONE AREA
+  /api/jobs/discover?area=Tzaneen&limitPerType=10
 
-  if (includeExternal) {
+  Use carefully. It calls Adzuna + Jooble many times.
+*/
+router.get('/discover', async (req, res) => {
+  const area = normalizeText(req.query.area || 'Tzaneen');
+  const limitPerType = Math.min(Math.max(Number(req.query.limitPerType || 10), 1), 20);
+  const maxTypes = Math.min(Math.max(Number(req.query.maxTypes || 12), 1), JOB_TYPE_KEYWORDS.length);
+
+  const selectedTypes = JOB_TYPE_KEYWORDS.slice(0, maxTypes);
+  const allJobs = [];
+  const warnings = [];
+
+  for (const keyword of selectedTypes) {
     try {
-      const adzuna = await searchAdzuna({
-        query,
+      const result = await runCombinedJobSearch({
+        rawQuery: keyword,
         area,
-        page: 1,
-        limit: Math.min(limit, 50),
+        limit: limitPerType,
+        includeAdzuna: true,
+        includeJooble: true,
+        includeOfficialSources: false,
       });
 
-      if (adzuna.ok) {
-        externalJobs = adzuna.jobs;
-      } else if (adzuna.error) {
-        warnings.push(`Adzuna search failed: ${adzuna.error}`);
-      }
+      allJobs.push(...result.jobs);
+      if (result.warnings?.length) warnings.push(...result.warnings);
+      await sleep(500);
     } catch (error) {
-      warnings.push(`Adzuna search failed: ${error?.message || 'Unknown error'}`);
+      warnings.push(`Discover failed for ${keyword}: ${error?.message || 'Unknown error'}`);
     }
   }
 
-  verifiedExternalJobs = [...externalJobs];
+  const merged = mergeJobsSmart({
+    adzunaJobs: allJobs.filter((job) => job.external_source === 'adzuna'),
+    joobleJobs: allJobs.filter((job) => job.external_source === 'jooble'),
+    databaseJobs: allJobs.filter((job) => job.external_source !== 'adzuna' && job.external_source !== 'jooble'),
+    officialCards: [],
+  });
 
-  if (verifyWithGoogle && googleConfigured() && externalJobs.length > 0 && verifyLimit > 0) {
-    const topJobs = externalJobs.slice(0, verifyLimit);
-    const restJobs = externalJobs.slice(verifyLimit);
+  const sorted = sortJobs(merged, 'jobs', area).slice(0, 100);
+  const saveResult = await saveJobsToSupabase(sorted);
 
-    try {
-      const verifiedTopJobs = [];
-
-      for (const job of topJobs) {
-        const verifiedJob = await verifyJobWithGoogle(job);
-        verifiedTopJobs.push(verifiedJob);
-        await sleep(250);
-      }
-
-      verifiedExternalJobs = [...verifiedTopJobs, ...restJobs];
-    } catch (error) {
-      warnings.push(`Google verification failed: ${error?.message || 'Unknown error'}`);
-      verifiedExternalJobs = externalJobs;
-    }
-  }
-
-  const fallbackCards = includeOfficialSources ? officialCardsForArea(area) : [];
-
-  const combined = removeDuplicates([
-    ...filteredManualJobs,
-    ...databaseJobs,
-    ...verifiedExternalJobs,
-  ]);
-
-  const finalJobs = sortJobs(combined.length ? combined : fallbackCards).slice(0, limit);
-
-  const saveableJobs = finalJobs.filter((job) => !job.isSourceCard);
-
-  const savedResult = saveableJobs.length
-    ? await saveJobsToSupabase(saveableJobs)
-    : {
-        ok: false,
-        saved: 0,
-        error: null,
-      };
-
-  const response = {
+  return res.json({
     ok: true,
-    source: 'facemex_jobs_auto_search',
-    query,
+    source: 'facemex_discover_jobs',
     area,
-    count: finalJobs.length,
-    employerPosts: filteredManualJobs.length,
-    databaseJobs: databaseJobs.length,
-    adzunaJobs: externalJobs.length,
-    fallbackCards: combined.length ? 0 : fallbackCards.length,
-    googleConfigured: googleConfigured(),
-    googleVerifiedTopJobs:
-      verifyWithGoogle && googleConfigured() ? Math.min(externalJobs.length, verifyLimit) : 0,
-    savedToSupabase: savedResult.saved,
-    saveError: savedResult.error || null,
+    searchedTypes: selectedTypes,
+    count: sorted.length,
+    savedToSupabase: saveResult.saved,
+    saveError: saveResult.error || null,
     warnings,
-    jobs: finalJobs,
-  };
-
-  saveToCache(query, area, response);
-
-  return res.json(response);
+    jobs: sorted,
+  });
 });
 
 /*
   REFRESH TEST
-  Browser friendly:
+  Browser:
   /api/jobs/refresh-test?secret=YOUR_SECRET&area=Tzaneen&query=jobs
 */
 router.get('/refresh-test', async (req, res) => {
@@ -1409,43 +1677,22 @@ router.get('/refresh-test', async (req, res) => {
   }
 
   const area = normalizeText(req.query.area || 'Tzaneen');
-  const query = normalizeText(req.query.query || req.query.q || 'jobs');
-  const verify = req.query.verify === 'true';
+  const rawQuery = normalizeText(req.query.query || req.query.q || 'jobs');
 
   try {
-    const adzuna = await searchAdzuna({
-      query,
+    const result = await runCombinedJobSearch({
+      rawQuery,
       area,
-      page: 1,
-      limit: 50,
+      limit: 80,
+      includeAdzuna: true,
+      includeJooble: true,
+      includeOfficialSources: true,
     });
 
-    let foundJobs = adzuna.jobs || [];
-
-    if (verify && googleConfigured()) {
-      const verified = [];
-
-      for (const job of foundJobs.slice(0, 3)) {
-        verified.push(await verifyJobWithGoogle(job));
-        await sleep(250);
-      }
-
-      foundJobs = [...verified, ...foundJobs.slice(3)];
-    }
-
-    const saveResult = await saveJobsToSupabase(foundJobs);
-
     return res.json({
-      ok: true,
+      ...result,
       source: 'refresh_test',
-      area,
-      query,
-      found: foundJobs.length,
-      saved: saveResult.saved,
-      saveError: saveResult.error || null,
-      googleVerified: verify && googleConfigured() ? Math.min(foundJobs.length, 3) : 0,
-      jobs: foundJobs.slice(0, 20),
-      message: 'Refresh test completed.',
+      message: 'Refresh test completed with Adzuna + Jooble.',
     });
   } catch (error) {
     return res.status(500).json({
@@ -1457,15 +1704,14 @@ router.get('/refresh-test', async (req, res) => {
 
 /*
   REFRESH JOBS
-  Use POST from Hoppscotch / cron:
   POST /api/jobs/refresh
   Header: x-job-refresh-secret: YOUR_SECRET
 
-  Optional body:
+  Body:
   {
     "areas": ["Tzaneen", "Polokwane"],
-    "query": "jobs",
-    "verify": false
+    "queries": ["jobs", "driver", "cashier", "farm"],
+    "limit": 30
   }
 */
 router.post('/refresh', async (req, res) => {
@@ -1477,64 +1723,65 @@ router.post('/refresh', async (req, res) => {
   }
 
   const body = req.body || {};
-  const query = normalizeText(body.query || req.query.query || 'jobs');
 
   const areas = Array.isArray(body.areas) && body.areas.length
     ? body.areas.map(normalizeText).filter(Boolean)
-    : PRIORITY_AREAS.slice(0, 6);
+    : ['Tzaneen', 'Polokwane', 'Phalaborwa', 'Hoedspruit', 'Makhado', 'Limpopo'];
 
-  const verify = body.verify === true || req.query.verify === 'true';
-  const warnings = [];
+  const queries = Array.isArray(body.queries) && body.queries.length
+    ? body.queries.map(normalizeText).filter(Boolean)
+    : ['jobs', 'general worker', 'cashier', 'driver', 'admin', 'security', 'farm', 'packhouse'];
+
+  const limit = Math.min(Math.max(Number(body.limit || 30), 1), 80);
+
   const allJobs = [];
+  const warnings = [];
 
   for (const area of areas) {
-    try {
-      const adzuna = await searchAdzuna({
-        query,
-        area,
-        page: 1,
-        limit: 50,
-      });
+    for (const query of queries) {
+      try {
+        const result = await runCombinedJobSearch({
+          rawQuery: query,
+          area,
+          limit,
+          includeAdzuna: true,
+          includeJooble: true,
+          includeOfficialSources: false,
+        });
 
-      if (!adzuna.ok) {
-        warnings.push(`Adzuna refresh failed for ${query} in ${area}: ${adzuna.error}`);
-        await sleep(800);
-        continue;
-      }
+        allJobs.push(...result.jobs);
 
-      let areaJobs = adzuna.jobs;
-
-      if (verify && googleConfigured() && areaJobs.length) {
-        const verified = [];
-
-        for (const job of areaJobs.slice(0, 2)) {
-          verified.push(await verifyJobWithGoogle(job));
-          await sleep(250);
+        if (result.warnings?.length) {
+          warnings.push(...result.warnings);
         }
 
-        areaJobs = [...verified, ...areaJobs.slice(2)];
+        await sleep(700);
+      } catch (error) {
+        warnings.push(`Refresh failed for ${query} in ${area}: ${error?.message || 'Unknown error'}`);
       }
-
-      allJobs.push(...areaJobs);
-      await sleep(800);
-    } catch (error) {
-      warnings.push(`Refresh failed for ${query} in ${area}: ${error?.message || 'Unknown error'}`);
     }
   }
 
-  const uniqueJobs = removeDuplicates(allJobs);
-  const saveResult = await saveJobsToSupabase(uniqueJobs);
+  const merged = mergeJobsSmart({
+    adzunaJobs: allJobs.filter((job) => job.external_source === 'adzuna'),
+    joobleJobs: allJobs.filter((job) => job.external_source === 'jooble'),
+    databaseJobs: allJobs.filter((job) => job.external_source !== 'adzuna' && job.external_source !== 'jooble'),
+    officialCards: [],
+  });
+
+  const sorted = sortJobs(merged, 'jobs', areas[0]).slice(0, 250);
+  const saveResult = await saveJobsToSupabase(sorted);
 
   return res.json({
     ok: true,
     source: 'facemex_jobs_refresh',
-    query,
     areas,
-    found: uniqueJobs.length,
+    queries,
+    found: sorted.length,
     saved: saveResult.saved,
     saveError: saveResult.error || null,
     warnings,
-    message: 'FaceMeX jobs refreshed successfully.',
+    message: 'FaceMeX jobs refreshed successfully with Adzuna + Jooble.',
   });
 });
 
@@ -1559,10 +1806,10 @@ router.post('/', requireAuth, async (req, res) => {
   const deadline = toStr(body.deadline || body.closing_date).trim();
 
   const skills = Array.isArray(body.skills)
-    ? body.skills.map((s) => toStr(s).trim()).filter(Boolean)
+    ? body.skills.map((skill) => toStr(skill).trim()).filter(Boolean)
     : toStr(body.skills)
         .split(',')
-        .map((s) => s.trim())
+        .map((skill) => skill.trim())
         .filter(Boolean);
 
   if (!title || !company) {
@@ -1576,7 +1823,7 @@ router.post('/', requireAuth, async (req, res) => {
     title,
     company,
     location: location || 'Remote',
-    type: type || 'Full-time',
+    type: type || guessCategoryFromText(`${title} ${description}`),
     description,
     skills,
     applyUrl,
@@ -1590,7 +1837,6 @@ router.post('/', requireAuth, async (req, res) => {
   await saveJSON('jobs.json', jobs).catch(() => {});
 
   const normalized = normalizeManualJob(job);
-
   await saveJobsToSupabase([normalized]).catch(() => {});
 
   return res.status(201).json(normalized);
@@ -1601,15 +1847,17 @@ router.post('/', requireAuth, async (req, res) => {
 */
 router.get('/:jobId/applications', (req, res) => {
   const { jobId } = req.params;
-  const list = applications.filter((a) => a.jobId === jobId);
+  const list = applications.filter((application) => application.jobId === jobId);
+
   return res.json(list);
 });
 
 router.post('/:jobId/apply', async (req, res) => {
   const { jobId } = req.params;
+
   const job =
-    jobs.find((j) => j.id === jobId) ||
-    OFFICIAL_JOB_SOURCE_CARDS.find((j) => j.id === jobId);
+    jobs.find((item) => item.id === jobId) ||
+    OFFICIAL_JOB_SOURCE_CARDS.find((item) => item.id === jobId);
 
   if (!job) {
     return res.status(404).json({
@@ -1630,13 +1878,13 @@ router.post('/:jobId/apply', async (req, res) => {
     });
   }
 
-  const cleaned = attachments
-    .map((f) => ({
-      name: toStr(f?.name).slice(0, 160),
-      type: toStr(f?.type).slice(0, 80),
-      dataUrl: toStr(f?.dataUrl),
+  const cleanedAttachments = attachments
+    .map((file) => ({
+      name: toStr(file?.name).slice(0, 160),
+      type: toStr(file?.type).slice(0, 80),
+      dataUrl: toStr(file?.dataUrl),
     }))
-    .filter((f) => f.name && f.dataUrl);
+    .filter((file) => file.name && file.dataUrl);
 
   const appRecord = {
     id: `a${Date.now()}`,
@@ -1647,7 +1895,7 @@ router.post('/:jobId/apply', async (req, res) => {
     email,
     phone,
     coverLetter,
-    attachments: cleaned,
+    attachments: cleanedAttachments,
     createdAt: new Date().toISOString(),
   };
 
