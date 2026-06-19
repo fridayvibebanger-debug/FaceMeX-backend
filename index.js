@@ -35,6 +35,7 @@ import marketplaceRouter from './routes/marketplace.js';
 import azureUploadsRouter from './routes/azureUploads.js';
 import uploadsRouter from './routes/uploads.js';
 import translateRouter from './routes/translate.js';
+import youtubeRouter from './routes/youtube.js';
 
 try {
   const rootEnvLocal = new URL('../.env.local', import.meta.url);
@@ -585,6 +586,12 @@ app.get('/api/health', async (_req, res) => {
       note:
         'AI answers and image analysis are handled in routes/ai.js. Frontend can send imageDataUrls/images to /api/ai/pro/job-assistant.',
     },
+    youtube: {
+      configured: !!process.env.YOUTUBE_API_KEY,
+      route: '/api/youtube/search?q=grade%2012%20maths',
+      purpose:
+        'Used for FaceMeX education videos, lessons, investor videos, grant explainers, and learning content.',
+    },
     yoco: {
       secretKeyConfigured: !!process.env.YOCO_SECRET_KEY,
       webhookSecretConfigured: !!process.env.YOCO_WEBHOOK_SECRET,
@@ -629,6 +636,10 @@ app.get('/api/ai/runtime-context', (_req, res) => {
       clickableJobLinks: true,
       liveBrowsing: false,
       maxJsonPayload: '35mb',
+    },
+    youtube: {
+      configured: !!process.env.YOUTUBE_API_KEY,
+      searchRoute: '/api/youtube/search',
     },
   });
 });
@@ -681,6 +692,7 @@ app.use('/api/uploads/azure', azureUploadsRouter);
 app.use('/api/uploads', uploadsRouter);
 
 app.use('/api/translate', translateRouter);
+app.use('/api/youtube', youtubeRouter);
 
 /*
   REAL-TIME SOCKET SYSTEM
@@ -1135,7 +1147,7 @@ io.on('connection', (socket) => {
         entry.socketIds.delete(socket.id);
 
         if (entry.socketIds.size === 0) {
-          map.delete(u.id);
+          map.delete(uid);
         }
       }
 
