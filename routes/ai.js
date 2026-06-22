@@ -1313,7 +1313,7 @@ async function captionImageWithHF({ imageUrl, imageDataUrl }) {
    WORKSPACE HANDLER
 --------------------------------------------- */
 
-async function handleCareerWorkspace(req, res) {
+async function detectWorkspaceIntent(req, res) {
   try {
     const {
       prompt = '',
@@ -2403,12 +2403,18 @@ Sincerely,
    WORKSPACE ROUTES
 --------------------------------------------- */
 
-router.post('/pro/job-assistant', handleCareerWorkspace);
-router.post('/job-assistant', handleCareerWorkspace);
-router.post('/workspace', handleCareerWorkspace);
-router.post('/career-workspace', handleCareerWorkspace);
-router.post('/ask', handleCareerWorkspace);
-router.post('/chat', handleCareerWorkspace);
+const routes = [
+  '/pro/job-assistant',
+  '/job-assistant',
+  '/workspace',
+  '/career-workspace',
+  '/ask',
+  '/chat',
+];
+
+routes.forEach((route) => {
+  router.post(route, detectWorkspaceIntent);
+});
 
 /* ---------------------------------------------
    TRANSLATE
