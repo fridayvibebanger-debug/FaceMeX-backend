@@ -386,7 +386,7 @@ function isMisusePrompt(text = '') {
   );
 }
 
-function detectWorkspaceIntent(text = '', hasImages = false, postContext = '') {
+function handleCareerWorkspace(text = '', hasImages = false, postContext = '') {
   const t = clean(text).toLowerCase();
 
   if (hasImages) return 'image-analysis';
@@ -1313,7 +1313,7 @@ async function captionImageWithHF({ imageUrl, imageDataUrl }) {
    WORKSPACE HANDLER
 --------------------------------------------- */
 
-async function detectWorkspaceIntent(req, res) {
+async function handleCareerWorkspace(req, res) {
   try {
     const {
       prompt = '',
@@ -1341,7 +1341,7 @@ async function detectWorkspaceIntent(req, res) {
     const postContext = extractPostContextFromBody(req.body);
     const images = normalizeImageInputs(req.body);
     const hasImages = images.length > 0;
-    const intent = detectWorkspaceIntent(userPrompt, hasImages, postContext);
+    const intent = handleCareerWorkspace(userPrompt, hasImages, postContext);
     const date = getSouthAfricaDateContext();
 
     if (!userPrompt && !hasImages && !postContext) {
@@ -1781,7 +1781,7 @@ router.post('/reply', async (req, res) => {
       });
     }
 
-    const intent = detectWorkspaceIntent(cleanedMessage, false, '');
+    const intent = handleCareerWorkspace(cleanedMessage, false, '');
 
     const prompt = `You are a helpful FaceMeX assistant.
 
@@ -1867,7 +1867,7 @@ router.post('/deepseek', async (req, res) => {
       });
     }
 
-    const intent = detectWorkspaceIntent(cleaned, false, '');
+    const intent = handleCareerWorkspace(cleaned, false, '');
 
     const out = await callDeepseekChat({
       messages: [
@@ -2403,7 +2403,7 @@ Sincerely,
    WORKSPACE ROUTES
 --------------------------------------------- */
 
-router.post('/ai', detectWorkspaceIntent);
+router.post('/ai', handleCareerWorkspace);
 
 /* ---------------------------------------------
    TRANSLATE
