@@ -386,7 +386,7 @@ function isMisusePrompt(text = '') {
   );
 }
 
-function handleCareerWorkspace(text = '', hasImages = false, postContext = '') {
+function detectWorkspaceIntent(text = '', hasImages = false, postContext = '') {
   const t = clean(text).toLowerCase();
 
   if (hasImages) return 'image-analysis';
@@ -820,9 +820,6 @@ Rules:
 9. If the user asks for business/logistics/startup advice, give a launch map, first money plan, pricing, scripts, and action steps.
 10. If the user asks for FaceMeX help, explain how to use FaceMeX clearly.
 11. If the request is unsafe, refuse briefly and redirect to a safe action.
-12. Never ask the user for extra information before answering.
-13. If the question is clear enough, answer immediately with a best guess.
-14. Only ask a question AFTER giving an answer (optional follow-up at the end).
 `;
 }
 
@@ -1341,7 +1338,7 @@ async function handleCareerWorkspace(req, res) {
     const postContext = extractPostContextFromBody(req.body);
     const images = normalizeImageInputs(req.body);
     const hasImages = images.length > 0;
-    const intent = handleCareerWorkspace(userPrompt, hasImages, postContext);
+    const intent = detectWorkspaceIntent(userPrompt, hasImages, postContext);
     const date = getSouthAfricaDateContext();
 
     if (!userPrompt && !hasImages && !postContext) {
@@ -1417,22 +1414,23 @@ async function handleCareerWorkspace(req, res) {
     let fallbackAnswer = '';
 
     if (intent === 'job-search') {
-  fallbackAnswer = buildJobFallbackAnswer(userPrompt);
-} else if (intent === 'business-strategy') {
-  fallbackAnswer = buildBusinessFallbackAnswer(userPrompt);
-} else if (
-  intent === 'company-verification' ||
-  intent === 'post-safety'
-) {
-  fallbackAnswer = buildCompanyVerificationFallback(
-    userPrompt || postContext
-  );
-} else if (intent === 'image-analysis') {
-  fallbackAnswer = imageAnalysis || buildImageNoConfigAnswer();
-} else {
-  fallbackAnswer =
-    "Always answer immediately without requesting clarification first.";
-}
+      fallbackAnswer = buildJobFallbackAnswer(userPrompt);
+    } else if (intent === 'business-strategy') {
+      fallbackAnswer = buildBusinessFallbackAnswer(userPrompt);
+    } else if (intent === 'company-verification' || intent === 'post-safety') {
+      fallbackAnswer = buildCompanyVerificationFallback(userPrompt || postContext);
+    } else if (intent === 'image-analysis') {
+      fallbackAnswer = imageAnalysis || buildImageNoConfigAnswer();
+    } else {
+      fallbackAnswer = `I understand what you mean.
+
+Please give me one more detail so I can answer properly:
+- What result do you want?
+- Which location?
+- Is this about a job, business, CV, image, post, or company?
+
+Then I’ll give you a direct answer and next steps.`;
+    }
 
     if (!canUseAi) {
       return res.json({
@@ -1781,7 +1779,7 @@ router.post('/reply', async (req, res) => {
       });
     }
 
-    const intent = handleCareerWorkspace(cleanedMessage, false, '');
+    const intent = detectWorkspaceIntent(cleanedMessage, false, '');
 
     const prompt = `You are a helpful FaceMeX assistant.
 
@@ -1867,7 +1865,7 @@ router.post('/deepseek', async (req, res) => {
       });
     }
 
-    const intent = handleCareerWorkspace(cleaned, false, '');
+    const intent = detectWorkspaceIntent(cleaned, false, '');
 
     const out = await callDeepseekChat({
       messages: [
@@ -2403,7 +2401,12 @@ Sincerely,
    WORKSPACE ROUTES
 --------------------------------------------- */
 
-router.post('/ai', handleCareerWorkspace);
+router.post('/pro/job-assistant', handleCareerWorkspace);
+router.post('/job-assistant', handleCareerWorkspace);
+router.post('/workspace', handleCareerWorkspace);
+router.post('/career-workspace', handleCareerWorkspace);
+router.post('/ask', handleCareerWorkspace);
+router.post('/chat', handleCareerWorkspace);
 
 /* ---------------------------------------------
    TRANSLATE
