@@ -1417,17 +1417,22 @@ async function handleCareerWorkspace(req, res) {
     let fallbackAnswer = '';
 
     if (intent === 'job-search') {
-      fallbackAnswer = buildJobFallbackAnswer(userPrompt);
-    } else if (intent === 'business-strategy') {
-      fallbackAnswer = buildBusinessFallbackAnswer(userPrompt);
-    } else if (intent === 'company-verification' || intent === 'post-safety') {
-      fallbackAnswer = buildCompanyVerificationFallback(userPrompt || postContext);
-    } else if (intent === 'image-analysis') {
-      fallbackAnswer = imageAnalysis || buildImageNoConfigAnswer();
-    } else {
-      fallbackAnswer = 
-Always answer immediately without requesting clarification first..`;
-    }
+  fallbackAnswer = buildJobFallbackAnswer(userPrompt);
+} else if (intent === 'business-strategy') {
+  fallbackAnswer = buildBusinessFallbackAnswer(userPrompt);
+} else if (
+  intent === 'company-verification' ||
+  intent === 'post-safety'
+) {
+  fallbackAnswer = buildCompanyVerificationFallback(
+    userPrompt || postContext
+  );
+} else if (intent === 'image-analysis') {
+  fallbackAnswer = imageAnalysis || buildImageNoConfigAnswer();
+} else {
+  fallbackAnswer =
+    "Always answer immediately without requesting clarification first.";
+}
 
     if (!canUseAi) {
       return res.json({
