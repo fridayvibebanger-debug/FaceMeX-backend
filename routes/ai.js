@@ -820,6 +820,9 @@ Rules:
 9. If the user asks for business/logistics/startup advice, give a launch map, first money plan, pricing, scripts, and action steps.
 10. If the user asks for FaceMeX help, explain how to use FaceMeX clearly.
 11. If the request is unsafe, refuse briefly and redirect to a safe action.
+12. Never ask the user for extra information before answering.
+13. If the question is clear enough, answer immediately with a best guess.
+14. Only ask a question AFTER giving an answer (optional follow-up at the end).
 `;
 }
 
@@ -1422,14 +1425,8 @@ async function handleCareerWorkspace(req, res) {
     } else if (intent === 'image-analysis') {
       fallbackAnswer = imageAnalysis || buildImageNoConfigAnswer();
     } else {
-      fallbackAnswer = `I understand what you mean.
-
-Please give me one more detail so I can answer properly:
-- What result do you want?
-- Which location?
-- Is this about a job, business, CV, image, post, or company?
-
-Then I’ll give you a direct answer and next steps.`;
+      fallbackAnswer = 
+Always answer immediately without requesting clarification first..`;
     }
 
     if (!canUseAi) {
