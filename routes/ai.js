@@ -2403,18 +2403,7 @@ Sincerely,
    WORKSPACE ROUTES
 --------------------------------------------- */
 
-const routes = [
-  '/pro/job-assistant',
-  '/job-assistant',
-  '/workspace',
-  '/career-workspace',
-  '/ask',
-  '/chat',
-];
-
-routes.forEach((route) => {
-  router.post(route, detectWorkspaceIntent);
-});
+router.post('/ai', detectWorkspaceIntent);
 
 /* ---------------------------------------------
    TRANSLATE
