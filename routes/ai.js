@@ -1,5 +1,5 @@
-const { Router } = require('express');
-const OpenAI = require('openai').default || require('openai');
+import { Router } from 'express';
+import OpenAI from 'openai';
 
 const router = Router();
 
@@ -107,7 +107,7 @@ async function callDeepseekChat(payload) {
   }
 
   const client = new OpenAI({
-    baseURL: process.env.DEEPSEEK_BASE_URL || 'https://facemex-backend-4akg.onrender.com',
+    baseURL: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
     apiKey,
   });
 
@@ -148,30 +148,6 @@ async function callLlamaChat(payload) {
       typeof process.env.LLAMA_MAX_TOKENS !== 'undefined'
         ? Number(process.env.LLAMA_MAX_TOKENS)
         : 512,
-    ...rest,
-  });
-}
-
-async function callOpenAIChat(payload) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  const baseURL = process.env.OPENAI_BASE_URL || process.env.OPENAI_API_BASE_URL;
-
-  if (!apiKey) {
-    throw new Error('OPENAI_API_KEY missing');
-  }
-
-  const client = new OpenAI({
-    apiKey,
-    baseURL: baseURL || 'https://api.openai.com/v1',
-  });
-
-  const { model, messages, ...rest } = payload || {};
-
-  return client.chat.completions.create({
-    model: model || process.env.OPENAI_MODEL || 'gpt-4o-mini',
-    messages,
-    temperature: typeof process.env.OPENAI_TEMPERATURE !== 'undefined' ? Number(process.env.OPENAI_TEMPERATURE) : 0.7,
-    max_tokens: typeof process.env.OPENAI_MAX_TOKENS !== 'undefined' ? Number(process.env.OPENAI_MAX_TOKENS) : 1600,
     ...rest,
   });
 }
@@ -457,34 +433,6 @@ function detectWorkspaceIntent(text = '', hasImages = false, postContext = '') {
   }
 
   return 'general';
-}
-
-function isDirectQuestionPrompt(text = '') {
-  const t = clean(text).toLowerCase();
-
-  if (!t) return false;
-
-  // Opinion / recommendation patterns
-  if (/\b(do you think|what do you think|in your opinion|should i|would you|is it better|which is better)\b/i.test(t)) {
-    return true;
-  }
-
-  // Comparison patterns
-  if (/\b(vs\b|versus|compare|comparison|difference between|better than)\b/i.test(t)) {
-    return true;
-  }
-
-  // Comparative phrasing like "more X than Y"
-  if (/\bmore\s+.+\s+than\b/i.test(t)) {
-    return true;
-  }
-
-  // Simple factual/question forms
-  if (/^(what|who|when|where|why|how|which|does|do|is|are|can|could|should|would|will)\b/.test(t) || /\?$/.test(t)) {
-    return true;
-  }
-
-  return false;
 }
 
 /* ---------------------------------------------
@@ -1066,7 +1014,7 @@ function titleCaseWords(text = '') {
 
 function splitList(value = '') {
   return clean(value)
-    .split(/[,\n;\/]+/)
+    .split(/[,;\n/]+/)
     .map((item) => clean(item))
     .filter(Boolean)
     .slice(0, 8);
@@ -1463,13 +1411,44 @@ async function handleCareerWorkspace(req, res) {
 
     const canUseAi = true;
 
-    // No local clarification fallback: prefer AI output. For empty AI responses
-    // retry Deepseek once and then try Llama as a secondary model.
+    let fallbackAnswer = '';
 
-    // Always use AI to answer; do not return a local fallback here.
+    if (intent === 'job-search') {
+      fallbackAnswer = buildJobFallbackAnswer(userPrompt);
+    } else if (intent === 'business-strategy') {
+      fallbackAnswer = buildBusinessFallbackAnswer(userPrompt);
+    } else if (intent === 'company-verification' || intent === 'post-safety') {
+      fallbackAnswer = buildCompanyVerificationFallback(userPrompt || postContext);
+    } else if (intent === 'image-analysis') {
+      fallbackAnswer = imageAnalysis || buildImageNoConfigAnswer();
+    } else {
+      fallbackAnswer = `I understand what you mean.
+
+Please give me one more detail so I can answer properly:
+- What result do you want?
+- Which location?
+- Is this about a job, business, CV, image, post, or company?
+
+Then I’ll give you a direct answer and next steps.`;
+    }
+
+    if (!canUseAi) {
+      return res.json({
+        ok: true,
+        answer: fallbackAnswer,
+        reply: fallbackAnswer,
+        response: fallbackAnswer,
+        text: fallbackAnswer,
+        content: fallbackAnswer,
+        intent,
+        dateContext: date,
+        links: buildClickableJobLinks(userPrompt || postContext || imageAnalysis),
+        source: 'fallback',
+      });
+    }
 
     try {
-      let out = await callDeepseekChat({
+      const out = await callDeepseekChat({
         messages: [
           {
             role: 'system',
@@ -1510,38 +1489,7 @@ Now answer the user according to their real intent.
         max_tokens: 1800,
       });
 
-      let aiText = stripMarkdownSymbols(getAiText(out)) || '';
-
-      // Retry once if empty
-      if (!aiText) {
-        try {
-          const retryOut = await callDeepseekChat({
-            messages: [
-              {
-                role: 'system',
-                content: buildGeneralSystemPrompt({
-                  intent,
-                  userText: userPrompt,
-                  postContext,
-                  imageAnalysis,
-                }),
-              },
-              { role: 'user', content: userPrompt },
-            ],
-            temperature: 0.35,
-            max_tokens: 1800,
-          });
-
-          aiText = stripMarkdownSymbols(getAiText(retryOut)) || '';
-        } catch (e) {
-          console.error('deepseek retry error', e);
-        }
-      }
-
-
-      const sourceTag = imageAnalysis ? 'vision-plus-deepseek' : 'deepseek';
-
-      const answer = aiText || imageAnalysis || '';
+      const answer = stripMarkdownSymbols(getAiText(out)) || fallbackAnswer;
 
       return res.json({
         ok: true,
@@ -1558,12 +1506,12 @@ Now answer the user according to their real intent.
           intent === 'company-verification' || intent === 'post-safety'
             ? buildCompanySearchLinks(userPrompt || postContext || imageAnalysis)
             : buildClickableJobLinks(userPrompt || postContext || imageAnalysis),
-        source: sourceTag,
+        source: imageAnalysis ? 'vision-plus-deepseek' : 'deepseek',
       });
     } catch (e) {
       console.error('workspace deepseek error', e);
 
-      const answer = imageAnalysis || '';
+      const answer = imageAnalysis || fallbackAnswer;
 
       return res.json({
         ok: true,
@@ -1580,7 +1528,7 @@ Now answer the user according to their real intent.
           intent === 'company-verification' || intent === 'post-safety'
             ? buildCompanySearchLinks(userPrompt || postContext || imageAnalysis)
             : buildClickableJobLinks(userPrompt || postContext || imageAnalysis),
-        source: 'error',
+        source: imageAnalysis ? 'vision-fallback' : 'fallback',
       });
     }
   } catch (err) {
@@ -1847,28 +1795,44 @@ Reply naturally to:
 ${cleanedMessage}`;
 
     try {
-      // Always use DeepSeek for user replies; do not fallback to OpenAI
-      const out = await callDeepseekChat({
-        messages: [
-          {
-            role: 'system',
-            content: buildGeneralSystemPrompt({
-              intent,
-              userText: cleanedMessage,
-            }),
-          },
-          { role: 'user', content: cleanedMessage },
-        ],
-        temperature: 0.35,
-        max_tokens: 800,
+      const out = await callLlamaChat({
+        messages: [{ role: 'user', content: prompt }],
       });
 
-      const response = getAiText(out) || '';
-      return res.json({ success: true, response, source: 'deepseek-api' });
+      const response = getAiText(out);
+
+      if (response) {
+        return res.json({
+          success: true,
+          response,
+          source: 'llama-api',
+        });
+      }
     } catch (e) {
-      console.error('reply deepseek error', e);
-      return res.json({ success: false, error: e.message || 'Deepseek reply failed' });
+      console.error('reply llama error', e);
     }
+
+    const out = await callDeepseekChat({
+      messages: [
+        {
+          role: 'system',
+          content: buildGeneralSystemPrompt({
+            intent,
+            userText: cleanedMessage,
+          }),
+        },
+        {
+          role: 'user',
+          content: cleanedMessage,
+        },
+      ],
+    });
+
+    return res.json({
+      success: true,
+      response: getAiText(out),
+      source: 'deepseek-api',
+    });
   } catch (err) {
     return res.json({
       success: false,
@@ -2497,4 +2461,4 @@ ${text}`;
   }
 });
 
-module.exports = router;
+export default router;
