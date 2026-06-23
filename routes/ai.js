@@ -1538,34 +1538,8 @@ Now answer the user according to their real intent.
         }
       }
 
-      let sourceTag = imageAnalysis ? 'vision-plus-deepseek' : 'deepseek';
 
-      // If still empty, try Llama as a secondary model
-      if (!aiText) {
-        try {
-          const out2 = await callOpenAIChat({
-            messages: [
-              {
-                role: 'system',
-                content: buildGeneralSystemPrompt({
-                  intent,
-                  userText: userPrompt,
-                  postContext,
-                  imageAnalysis,
-                }),
-              },
-              { role: 'user', content: userPrompt },
-            ],
-            temperature: 0.6,
-            max_tokens: 1200,
-          });
-
-          aiText = stripMarkdownSymbols(getAiText(out2)) || '';
-          sourceTag = 'llama';
-        } catch (e) {
-          console.error('llama fallback error', e);
-        }
-      }
+      const sourceTag = imageAnalysis ? 'vision-plus-deepseek' : 'deepseek';
 
       const answer = aiText || imageAnalysis || '';
 
@@ -1589,69 +1563,26 @@ Now answer the user according to their real intent.
     } catch (e) {
       console.error('workspace deepseek error', e);
 
-      // Final fallback: try Llama before returning an error response
-      try {
-        const out2 = await callOpenAIChat({
-          messages: [
-            {
-              role: 'system',
-              content: buildGeneralSystemPrompt({
-                intent,
-                userText: userPrompt,
-                postContext,
-                imageAnalysis,
-              }),
-            },
-            { role: 'user', content: userPrompt },
-          ],
-          temperature: 0.6,
-          max_tokens: 1200,
-        });
+      const answer = imageAnalysis || '';
 
-        const aiText = stripMarkdownSymbols(getAiText(out2)) || '';
-
-        const answer = aiText || imageAnalysis || '';
-
-        return res.json({
-          ok: true,
-          answer,
-          reply: answer,
-          response: answer,
-          text: answer,
-          content: answer,
-          intent,
-          dateContext: date,
-          imageAnalysis,
-          imageCount: images.length,
-          links:
-            intent === 'company-verification' || intent === 'post-safety'
-              ? buildCompanySearchLinks(userPrompt || postContext || imageAnalysis)
-              : buildClickableJobLinks(userPrompt || postContext || imageAnalysis),
-          source: 'llama-fallback',
-        });
-      } catch (e2) {
-        console.error('workspace llama final error', e2);
-
-        const answer = imageAnalysis || '';
-
-        return res.json({
-          ok: true,
-          answer,
-          reply: answer,
-          response: answer,
-          text: answer,
-          content: answer,
-          intent,
-          dateContext: date,
-          imageAnalysis,
-          imageCount: images.length,
-          links:
-            intent === 'company-verification' || intent === 'post-safety'
-              ? buildCompanySearchLinks(userPrompt || postContext || imageAnalysis)
-              : buildClickableJobLinks(userPrompt || postContext || imageAnalysis),
-          source: 'error',
-        });
-      }
+      return res.json({
+        ok: true,
+        answer,
+        reply: answer,
+        response: answer,
+        text: answer,
+        content: answer,
+        intent,
+        dateContext: date,
+        imageAnalysis,
+        imageCount: images.length,
+        links:
+          intent === 'company-verification' || intent === 'post-safety'
+            ? buildCompanySearchLinks(userPrompt || postContext || imageAnalysis)
+            : buildClickableJobLinks(userPrompt || postContext || imageAnalysis),
+        source: 'error',
+      });
+    }
     }
   } catch (err) {
     console.error('workspace error', err);
@@ -1917,8 +1848,8 @@ Reply naturally to:
 ${cleanedMessage}`;
 
     try {
-      // Prefer DeepSeek for user replies
-      let out = await callDeepseekChat({
+      // Always use DeepSeek for user replies; do not fallback to OpenAI
+      const out = await callDeepseekChat({
         messages: [
           {
             role: 'system',
@@ -1933,33 +1864,11 @@ ${cleanedMessage}`;
         max_tokens: 800,
       });
 
-      let response = getAiText(out) || '';
-
-      // Fallback to OpenAI if DeepSeek returns empty
-      if (!response) {
-        try {
-          const out2 = await callOpenAIChat({ messages: [{ role: 'user', content: prompt }] });
-          response = getAiText(out2) || '';
-          if (response) {
-            return res.json({ success: true, response, source: 'openai' });
-          }
-        } catch (e) {
-          console.error('reply openai fallback error', e);
-        }
-      } else {
-        return res.json({ success: true, response, source: 'deepseek-api' });
-      }
+      const response = getAiText(out) || '';
+      return res.json({ success: true, response, source: 'deepseek-api' });
     } catch (e) {
       console.error('reply deepseek error', e);
-      // Try OpenAI as final fallback
-      try {
-        const out = await callOpenAIChat({ messages: [{ role: 'user', content: prompt }] });
-        const response = getAiText(out) || '';
-        return res.json({ success: true, response, source: 'openai' });
-      } catch (e2) {
-        console.error('reply openai final error', e2);
-        return res.json({ success: false, error: 'AI reply failed' });
-      }
+      return res.json({ success: false, error: e.message || 'Deepseek reply failed' });
     }
   } catch (err) {
     return res.json({
