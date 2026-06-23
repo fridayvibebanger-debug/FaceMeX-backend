@@ -1502,20 +1502,7 @@ Please give me one more detail so I can answer properly:
 Then I’ll give you a direct answer and next steps.`;
     }
 
-    if (!canUseAi) {
-      return res.json({
-        ok: true,
-        answer: fallbackAnswer,
-        reply: fallbackAnswer,
-        response: fallbackAnswer,
-        text: fallbackAnswer,
-        content: fallbackAnswer,
-        intent,
-        dateContext: date,
-        links: buildClickableJobLinks(userPrompt || postContext || imageAnalysis),
-        source: 'fallback',
-      });
-    }
+    // Always use AI to answer; do not return a local fallback here.
 
     try {
       const out = await callDeepseekChat({
