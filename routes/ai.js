@@ -1917,44 +1917,50 @@ Reply naturally to:
 ${cleanedMessage}`;
 
     try {
-      const out = await callOpenAIChat({
-        messages: [{ role: 'user', content: prompt }],
+      // Prefer DeepSeek for user replies
+      let out = await callDeepseekChat({
+        messages: [
+          {
+            role: 'system',
+            content: buildGeneralSystemPrompt({
+              intent,
+              userText: cleanedMessage,
+            }),
+          },
+          { role: 'user', content: cleanedMessage },
+        ],
+        temperature: 0.35,
+        max_tokens: 800,
       });
 
-      const response = getAiText(out);
+      let response = getAiText(out) || '';
 
-      if (response) {
-        return res.json({
-          success: true,
-          response,
-          source: 'llama-api',
-        });
+      // Fallback to OpenAI if DeepSeek returns empty
+      if (!response) {
+        try {
+          const out2 = await callOpenAIChat({ messages: [{ role: 'user', content: prompt }] });
+          response = getAiText(out2) || '';
+          if (response) {
+            return res.json({ success: true, response, source: 'openai' });
+          }
+        } catch (e) {
+          console.error('reply openai fallback error', e);
+        }
+      } else {
+        return res.json({ success: true, response, source: 'deepseek-api' });
       }
     } catch (e) {
-      console.error('reply llama error', e);
+      console.error('reply deepseek error', e);
+      // Try OpenAI as final fallback
+      try {
+        const out = await callOpenAIChat({ messages: [{ role: 'user', content: prompt }] });
+        const response = getAiText(out) || '';
+        return res.json({ success: true, response, source: 'openai' });
+      } catch (e2) {
+        console.error('reply openai final error', e2);
+        return res.json({ success: false, error: 'AI reply failed' });
+      }
     }
-
-    const out = await callDeepseekChat({
-      messages: [
-        {
-          role: 'system',
-          content: buildGeneralSystemPrompt({
-            intent,
-            userText: cleanedMessage,
-          }),
-        },
-        {
-          role: 'user',
-          content: cleanedMessage,
-        },
-      ],
-    });
-
-    return res.json({
-      success: true,
-      response: getAiText(out),
-      source: 'deepseek-api',
-    });
   } catch (err) {
     return res.json({
       success: false,
