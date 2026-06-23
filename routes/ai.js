@@ -152,6 +152,30 @@ async function callLlamaChat(payload) {
   });
 }
 
+async function callOpenAIChat(payload) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  const baseURL = process.env.OPENAI_BASE_URL || process.env.OPENAI_API_BASE_URL;
+
+  if (!apiKey) {
+    throw new Error('OPENAI_API_KEY missing');
+  }
+
+  const client = new OpenAI({
+    apiKey,
+    baseURL: baseURL || 'https://api.openai.com/v1',
+  });
+
+  const { model, messages, ...rest } = payload || {};
+
+  return client.chat.completions.create({
+    model: model || process.env.OPENAI_MODEL || 'gpt-4o-mini',
+    messages,
+    temperature: typeof process.env.OPENAI_TEMPERATURE !== 'undefined' ? Number(process.env.OPENAI_TEMPERATURE) : 0.7,
+    max_tokens: typeof process.env.OPENAI_MAX_TOKENS !== 'undefined' ? Number(process.env.OPENAI_MAX_TOKENS) : 1600,
+    ...rest,
+  });
+}
+
 async function callVisionChat({ userPrompt, images, postContext = '' }) {
   const apiKey = process.env.OPENAI_VISION_API_KEY || process.env.OPENAI_API_KEY;
 
@@ -1439,73 +1463,13 @@ async function handleCareerWorkspace(req, res) {
 
     const canUseAi = true;
 
-    let fallbackAnswer = '';
-
-    if (intent === 'job-search') {
-      fallbackAnswer = buildJobFallbackAnswer(userPrompt);
-    } else if (intent === 'business-strategy') {
-      fallbackAnswer = buildBusinessFallbackAnswer(userPrompt);
-    } else if (intent === 'company-verification' || intent === 'post-safety') {
-      fallbackAnswer = buildCompanyVerificationFallback(userPrompt || postContext);
-    } else if (intent === 'image-analysis') {
-      fallbackAnswer = imageAnalysis || buildImageNoConfigAnswer();
-    } else {
-      // If this looks like a simple/general question (fact, comparison, opinion),
-      // answer it directly instead of asking for clarification.
-      if (intent === 'general' && isDirectQuestionPrompt(userPrompt)) {
-        try {
-          const out = await callDeepseekChat({
-            messages: [
-              {
-                role: 'system',
-                content: buildGeneralSystemPrompt({
-                  intent,
-                  userText: userPrompt,
-                  postContext,
-                  imageAnalysis,
-                }),
-              },
-              { role: 'user', content: userPrompt },
-            ],
-            temperature: 0.35,
-            max_tokens: 800,
-          });
-
-          const directAnswer = stripMarkdownSymbols(getAiText(out)) || '';
-
-          if (directAnswer) {
-            return res.json({
-              ok: true,
-              answer: directAnswer,
-              reply: directAnswer,
-              response: directAnswer,
-              text: directAnswer,
-              content: directAnswer,
-              intent,
-              dateContext: date,
-              source: 'direct-general',
-            });
-          }
-        } catch (e) {
-          console.error('direct general answer error', e);
-          // fall through to the clarification fallback below
-        }
-      }
-
-      fallbackAnswer = `I understand what you mean.
-
-Please give me one more detail so I can answer properly:
-- What result do you want?
-- Which location?
-- Is this about a job, business, CV, image, post, or company?
-
-Then I’ll give you a direct answer and next steps.`;
-    }
+    // No local clarification fallback: prefer AI output. For empty AI responses
+    // retry Deepseek once and then try Llama as a secondary model.
 
     // Always use AI to answer; do not return a local fallback here.
 
     try {
-      const out = await callDeepseekChat({
+      let out = await callDeepseekChat({
         messages: [
           {
             role: 'system',
@@ -1546,7 +1510,64 @@ Now answer the user according to their real intent.
         max_tokens: 1800,
       });
 
-      const answer = stripMarkdownSymbols(getAiText(out)) || fallbackAnswer;
+      let aiText = stripMarkdownSymbols(getAiText(out)) || '';
+
+      // Retry once if empty
+      if (!aiText) {
+        try {
+          const retryOut = await callDeepseekChat({
+            messages: [
+              {
+                role: 'system',
+                content: buildGeneralSystemPrompt({
+                  intent,
+                  userText: userPrompt,
+                  postContext,
+                  imageAnalysis,
+                }),
+              },
+              { role: 'user', content: userPrompt },
+            ],
+            temperature: 0.35,
+            max_tokens: 1800,
+          });
+
+          aiText = stripMarkdownSymbols(getAiText(retryOut)) || '';
+        } catch (e) {
+          console.error('deepseek retry error', e);
+        }
+      }
+
+      let sourceTag = imageAnalysis ? 'vision-plus-deepseek' : 'deepseek';
+
+      // If still empty, try Llama as a secondary model
+      if (!aiText) {
+        try {
+          const out2 = await callOpenAIChat({
+            messages: [
+              {
+                role: 'system',
+                content: buildGeneralSystemPrompt({
+                  intent,
+                  userText: userPrompt,
+                  postContext,
+                  imageAnalysis,
+                }),
+              },
+              { role: 'user', content: userPrompt },
+            ],
+            temperature: 0.6,
+            max_tokens: 1200,
+          });
+
+          aiText = stripMarkdownSymbols(getAiText(out2)) || '';
+          sourceTag = 'llama';
+        } catch (e) {
+          console.error('llama fallback error', e);
+        }
+      }
+
+      const answer = aiText || imageAnalysis || '';
 
       return res.json({
         ok: true,
@@ -1563,30 +1584,74 @@ Now answer the user according to their real intent.
           intent === 'company-verification' || intent === 'post-safety'
             ? buildCompanySearchLinks(userPrompt || postContext || imageAnalysis)
             : buildClickableJobLinks(userPrompt || postContext || imageAnalysis),
-        source: imageAnalysis ? 'vision-plus-deepseek' : 'deepseek',
+        source: sourceTag,
       });
     } catch (e) {
       console.error('workspace deepseek error', e);
 
-      const answer = imageAnalysis || fallbackAnswer;
+      // Final fallback: try Llama before returning an error response
+      try {
+        const out2 = await callOpenAIChat({
+          messages: [
+            {
+              role: 'system',
+              content: buildGeneralSystemPrompt({
+                intent,
+                userText: userPrompt,
+                postContext,
+                imageAnalysis,
+              }),
+            },
+            { role: 'user', content: userPrompt },
+          ],
+          temperature: 0.6,
+          max_tokens: 1200,
+        });
 
-      return res.json({
-        ok: true,
-        answer,
-        reply: answer,
-        response: answer,
-        text: answer,
-        content: answer,
-        intent,
-        dateContext: date,
-        imageAnalysis,
-        imageCount: images.length,
-        links:
-          intent === 'company-verification' || intent === 'post-safety'
-            ? buildCompanySearchLinks(userPrompt || postContext || imageAnalysis)
-            : buildClickableJobLinks(userPrompt || postContext || imageAnalysis),
-        source: imageAnalysis ? 'vision-fallback' : 'fallback',
-      });
+        const aiText = stripMarkdownSymbols(getAiText(out2)) || '';
+
+        const answer = aiText || imageAnalysis || '';
+
+        return res.json({
+          ok: true,
+          answer,
+          reply: answer,
+          response: answer,
+          text: answer,
+          content: answer,
+          intent,
+          dateContext: date,
+          imageAnalysis,
+          imageCount: images.length,
+          links:
+            intent === 'company-verification' || intent === 'post-safety'
+              ? buildCompanySearchLinks(userPrompt || postContext || imageAnalysis)
+              : buildClickableJobLinks(userPrompt || postContext || imageAnalysis),
+          source: 'llama-fallback',
+        });
+      } catch (e2) {
+        console.error('workspace llama final error', e2);
+
+        const answer = imageAnalysis || '';
+
+        return res.json({
+          ok: true,
+          answer,
+          reply: answer,
+          response: answer,
+          text: answer,
+          content: answer,
+          intent,
+          dateContext: date,
+          imageAnalysis,
+          imageCount: images.length,
+          links:
+            intent === 'company-verification' || intent === 'post-safety'
+              ? buildCompanySearchLinks(userPrompt || postContext || imageAnalysis)
+              : buildClickableJobLinks(userPrompt || postContext || imageAnalysis),
+          source: 'error',
+        });
+      }
     }
   } catch (err) {
     console.error('workspace error', err);
@@ -1852,7 +1917,7 @@ Reply naturally to:
 ${cleanedMessage}`;
 
     try {
-      const out = await callLlamaChat({
+      const out = await callOpenAIChat({
         messages: [{ role: 'user', content: prompt }],
       });
 
