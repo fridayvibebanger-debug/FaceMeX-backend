@@ -450,6 +450,11 @@ function isDirectQuestionPrompt(text = '') {
     return true;
   }
 
+  // Comparative phrasing like "more X than Y"
+  if (/\bmore\s+.+\s+than\b/i.test(t)) {
+    return true;
+  }
+
   // Simple factual/question forms
   if (/^(what|who|when|where|why|how|which|does|do|is|are|can|could|should|would|will)\b/.test(t) || /\?$/.test(t)) {
     return true;
