@@ -1,5 +1,5 @@
-import { Router } from 'express';
-import OpenAI from 'openai';
+const { Router } = require('express');
+const OpenAI = require('openai').default || require('openai');
 
 const router = Router();
 
@@ -1583,7 +1583,6 @@ Now answer the user according to their real intent.
         source: 'error',
       });
     }
-    }
   } catch (err) {
     console.error('workspace error', err);
 
@@ -2498,4 +2497,4 @@ ${text}`;
   }
 });
 
-export default router;
+module.exports = router;
