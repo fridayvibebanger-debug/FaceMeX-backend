@@ -435,6 +435,29 @@ function detectWorkspaceIntent(text = '', hasImages = false, postContext = '') {
   return 'general';
 }
 
+function isDirectQuestionPrompt(text = '') {
+  const t = clean(text).toLowerCase();
+
+  if (!t) return false;
+
+  // Opinion / recommendation patterns
+  if (/\b(do you think|what do you think|in your opinion|should i|would you|is it better|which is better)\b/i.test(t)) {
+    return true;
+  }
+
+  // Comparison patterns
+  if (/\b(vs\b|versus|compare|comparison|difference between|better than)\b/i.test(t)) {
+    return true;
+  }
+
+  // Simple factual/question forms
+  if (/^(what|who|when|where|why|how|which|does|do|is|are|can|could|should|would|will)\b/.test(t) || /\?$/.test(t)) {
+    return true;
+  }
+
+  return false;
+}
+
 /* ---------------------------------------------
    CONTEXT EXTRACTION
 --------------------------------------------- */
@@ -1014,7 +1037,7 @@ function titleCaseWords(text = '') {
 
 function splitList(value = '') {
   return clean(value)
-    .split(/[,;\n/]+/)
+    .split(/[,\n;\/]+/)
     .map((item) => clean(item))
     .filter(Boolean)
     .slice(0, 8);
@@ -1422,6 +1445,48 @@ async function handleCareerWorkspace(req, res) {
     } else if (intent === 'image-analysis') {
       fallbackAnswer = imageAnalysis || buildImageNoConfigAnswer();
     } else {
+      // If this looks like a simple/general question (fact, comparison, opinion),
+      // answer it directly instead of asking for clarification.
+      if (intent === 'general' && isDirectQuestionPrompt(userPrompt)) {
+        try {
+          const out = await callDeepseekChat({
+            messages: [
+              {
+                role: 'system',
+                content: buildGeneralSystemPrompt({
+                  intent,
+                  userText: userPrompt,
+                  postContext,
+                  imageAnalysis,
+                }),
+              },
+              { role: 'user', content: userPrompt },
+            ],
+            temperature: 0.35,
+            max_tokens: 800,
+          });
+
+          const directAnswer = stripMarkdownSymbols(getAiText(out)) || '';
+
+          if (directAnswer) {
+            return res.json({
+              ok: true,
+              answer: directAnswer,
+              reply: directAnswer,
+              response: directAnswer,
+              text: directAnswer,
+              content: directAnswer,
+              intent,
+              dateContext: date,
+              source: 'direct-general',
+            });
+          }
+        } catch (e) {
+          console.error('direct general answer error', e);
+          // fall through to the clarification fallback below
+        }
+      }
+
       fallbackAnswer = `I understand what you mean.
 
 Please give me one more detail so I can answer properly:
