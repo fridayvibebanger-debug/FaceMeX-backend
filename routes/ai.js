@@ -107,7 +107,7 @@ async function callDeepseekChat(payload) {
   }
 
   const client = new OpenAI({
-    baseURL: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
+    baseURL: process.env.DEEPSEEK_BASE_URL || 'https://facemex-backend-4akg.onrender.com',
     apiKey,
   });
 
