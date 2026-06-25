@@ -96,158 +96,80 @@ function normalizeUserPromptText(text = '') {
 }
 
 /* ---------------------------------------------
-   AI CLIENTS (FIXED + PRODUCTION SAFE)
+   AI CLIENTS
 --------------------------------------------- */
 
 async function callDeepseekChat(payload) {
-  try {
-    const apiKey = process.env.DEEPSEEK_API_KEY;
+  const apiKey = process.env.DEEPSEEK_API_KEY;
 
-    if (!apiKey) {
-      console.error("❌ DEEPSEEK_API_KEY missing");
-      throw new Error("DeepSeek not configured");
-    }
-
-    const client = new OpenAI({
-      baseURL: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1',
-      apiKey,
-    });
-
-    const { model, messages, ...rest } = payload || {};
-
-    console.log("🚀 Using DeepSeek...");
-
-    const response = await client.chat.completions.create({
-      model: model || process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-      messages,
-      temperature: 0.35,
-      max_tokens: 1600,
-      ...rest,
-    });
-
-    console.log("✅ DeepSeek success");
-
-    return response;
-
-  } catch (err) {
-    console.error("🔥 DeepSeek failed:", err.message);
-
-    // fallback to LLaMA
-    if (process.env.LLAMA_API_KEY && process.env.LLAMA_API_BASE_URL) {
-      console.log("⚠️ Falling back to LLaMA...");
-      return callLlamaChat(payload);
-    }
-
-    throw err;
+  if (!apiKey) {
+    throw new Error('DEEPSEEK_API_KEY missing');
   }
+
+  const client = new OpenAI({
+    baseURL: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
+    apiKey,
+  });
+
+  const { model, messages, ...rest } = payload || {};
+
+  return client.chat.completions.create({
+    model: model || process.env.DEEPSEEK_MODEL || 'deepseek-chat',
+    messages,
+    temperature: 0.35,
+    max_tokens: 1600,
+    ...rest,
+  });
 }
 
 async function callLlamaChat(payload) {
-  try {
-    const apiKey = process.env.LLAMA_API_KEY;
-    const baseURL = process.env.LLAMA_API_BASE_URL;
+  const apiKey = process.env.LLAMA_API_KEY;
+  const baseURL = process.env.LLAMA_API_BASE_URL;
 
-    if (!apiKey || !baseURL) {
-      console.error("❌ LLaMA config missing");
-      throw new Error('LLaMA not configured');
-    }
-
-    const client = new OpenAI({
-      baseURL,
-      apiKey,
-    });
-
-    const { model, messages, ...rest } = payload || {};
-
-    console.log("🦙 Using LLaMA...");
-
-    const response = await client.chat.completions.create({
-      model: model || process.env.LLAMA_MODEL || 'llama-3.1-8b-instruct',
-      messages,
-      temperature:
-        typeof process.env.LLAMA_TEMPERATURE !== 'undefined'
-          ? Number(process.env.LLAMA_TEMPERATURE)
-          : 0.8,
-      max_tokens:
-        typeof process.env.LLAMA_MAX_TOKENS !== 'undefined'
-          ? Number(process.env.LLAMA_MAX_TOKENS)
-          : 512,
-      ...rest,
-    });
-
-    console.log("✅ LLaMA success");
-
-    return response;
-
-  } catch (err) {
-    console.error("🔥 LLaMA failed:", err.message);
-    throw err;
+  if (!apiKey || !baseURL) {
+    throw new Error('LLAMA_API_KEY or LLAMA_API_BASE_URL missing');
   }
+
+  const client = new OpenAI({
+    baseURL,
+    apiKey,
+  });
+
+  const { model, messages, ...rest } = payload || {};
+
+  return client.chat.completions.create({
+    model: model || process.env.LLAMA_MODEL || 'llama-3.1-8b-instruct',
+    messages,
+    temperature:
+      typeof process.env.LLAMA_TEMPERATURE !== 'undefined'
+        ? Number(process.env.LLAMA_TEMPERATURE)
+        : 0.8,
+    max_tokens:
+      typeof process.env.LLAMA_MAX_TOKENS !== 'undefined'
+        ? Number(process.env.LLAMA_MAX_TOKENS)
+        : 512,
+    ...rest,
+  });
 }
 
 async function callVisionChat({ userPrompt, images, postContext = '' }) {
-  try {
-    const apiKey =
-      process.env.OPENAI_VISION_API_KEY || process.env.OPENAI_API_KEY;
+  const apiKey = process.env.OPENAI_VISION_API_KEY || process.env.OPENAI_API_KEY;
 
-    if (!apiKey) {
-      console.warn("⚠️ Vision API key missing");
-
-      return {
-        ok: false,
-        text:
-          'Image analysis is not configured. Add OPENAI_API_KEY and OPENAI_VISION_MODEL to your backend.',
-      };
-    }
-
-    const client = new OpenAI({
-      apiKey,
-      baseURL:
-        process.env.OPENAI_VISION_BASE_URL ||
-        process.env.OPENAI_BASE_URL ||
-        'https://api.openai.com/v1',
-    });
-
-    console.log("🖼️ Calling Vision model...");
-
-    // ⚠️ NOTE: You must implement actual messages for vision here
-    // This is just a safe placeholder
-    const response = await client.chat.completions.create({
-      model: process.env.OPENAI_VISION_MODEL || 'gpt-4o-mini',
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: userPrompt || "Analyze this image" },
-            ...images.map((img) => ({
-              type: "image_url",
-              image_url: { url: img.dataUrl },
-            })),
-          ],
-        },
-      ],
-      max_tokens: 800,
-    });
-
-    const text =
-      response?.choices?.[0]?.message?.content || "No analysis available";
-
-    console.log("✅ Vision success");
-
-    return {
-      ok: true,
-      text,
-    };
-
-  } catch (err) {
-    console.error("🔥 Vision failed:", err.message);
-
+  if (!apiKey) {
     return {
       ok: false,
-      text: "Image analysis failed. Please try again.",
+      text:
+        'I received the image, but image analysis is not configured yet. Add OPENAI_API_KEY to the backend .env file and set OPENAI_VISION_MODEL=gpt-4o-mini.',
     };
   }
-}
+
+  const client = new OpenAI({
+    apiKey,
+    baseURL:
+      process.env.OPENAI_VISION_BASE_URL ||
+      process.env.OPENAI_BASE_URL ||
+      'https://api.openai.com/v1',
+  });
 
   const date = getSouthAfricaDateContext();
 
