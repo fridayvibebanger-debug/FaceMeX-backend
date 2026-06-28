@@ -3,8 +3,6 @@ import OpenAI from 'openai';
 
 const router = Router();
 
-const useLocalAi = false;
-
 /* ---------------------------------------------
    BASIC HELPERS
 --------------------------------------------- */
@@ -118,36 +116,6 @@ async function callDeepseekChat(payload) {
     messages,
     temperature: 0.35,
     max_tokens: 1600,
-    ...rest,
-  });
-}
-
-async function callLlamaChat(payload) {
-  const apiKey = process.env.LLAMA_API_KEY;
-  const baseURL = process.env.LLAMA_API_BASE_URL;
-
-  if (!apiKey || !baseURL) {
-    throw new Error('LLAMA_API_KEY or LLAMA_API_BASE_URL missing');
-  }
-
-  const client = new OpenAI({
-    baseURL,
-    apiKey,
-  });
-
-  const { model, messages, ...rest } = payload || {};
-
-  return client.chat.completions.create({
-    model: model || process.env.LLAMA_MODEL || 'llama-3.1-8b-instruct',
-    messages,
-    temperature:
-      typeof process.env.LLAMA_TEMPERATURE !== 'undefined'
-        ? Number(process.env.LLAMA_TEMPERATURE)
-        : 0.8,
-    max_tokens:
-      typeof process.env.LLAMA_MAX_TOKENS !== 'undefined'
-        ? Number(process.env.LLAMA_MAX_TOKENS)
-        : 512,
     ...rest,
   });
 }
@@ -1780,19 +1748,6 @@ router.post('/reply', async (req, res) => {
     }
 
     const intent = detectWorkspaceIntent(cleanedMessage, false, '');
-
-    const prompt = `You are a helpful FaceMeX assistant.
-
-Current date:
-Today is ${date.readableDateTime}.
-Short date: ${date.shortDate}.
-Timezone: ${date.timeZone}.
-
-Style: ${style || 'clear and friendly'}
-Intent: ${intent}
-
-Reply naturally to:
-${cleanedMessage}`;
 
     try {
       const out = await callDeepseekChat({
