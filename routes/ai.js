@@ -100,10 +100,10 @@ function normalizeUserPromptText(text = '') {
 --------------------------------------------- */
 
 async function callDeepseekChat(payload) {
-  const apiKey = process.env.DEEPSEEK_API_KEY;
+  const apiKey = process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY;
 
   if (!apiKey) {
-    throw new Error('DEEPSEEK_API_KEY missing');
+    throw new Error('DEEPSEEK_API_KEY or OPENAI_API_KEY missing');
   }
 
   const client = new OpenAI({
@@ -1795,8 +1795,22 @@ Reply naturally to:
 ${cleanedMessage}`;
 
     try {
-      const out = await callLlamaChat({
-        messages: [{ role: 'user', content: prompt }],
+      const out = await callDeepseekChat({
+        messages: [
+          {
+            role: 'system',
+            content: buildGeneralSystemPrompt({
+              intent,
+              userText: cleanedMessage,
+            }),
+          },
+          {
+            role: 'user',
+            content: cleanedMessage,
+          },
+        ],
+        temperature: 0.4,
+        max_tokens: 700,
       });
 
       const response = getAiText(out);
@@ -1805,33 +1819,17 @@ ${cleanedMessage}`;
         return res.json({
           success: true,
           response,
-          source: 'llama-api',
+          source: 'deepseek-api',
         });
       }
     } catch (e) {
-      console.error('reply llama error', e);
+      console.error('reply deepseek error', e);
     }
-
-    const out = await callDeepseekChat({
-      messages: [
-        {
-          role: 'system',
-          content: buildGeneralSystemPrompt({
-            intent,
-            userText: cleanedMessage,
-          }),
-        },
-        {
-          role: 'user',
-          content: cleanedMessage,
-        },
-      ],
-    });
 
     return res.json({
       success: true,
-      response: getAiText(out),
-      source: 'deepseek-api',
+      response: 'I am having trouble reaching the AI service right now. Please try again in a moment.',
+      source: 'deepseek-fallback',
     });
   } catch (err) {
     return res.json({
