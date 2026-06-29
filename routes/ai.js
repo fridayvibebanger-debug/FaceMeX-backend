@@ -341,7 +341,8 @@ function isJobSearchPrompt(text = '') {
 
   if (isBusinessPrompt(t)) return false;
 
-  return /\b(job|jobs|work|hiring|vacancy|vacancies|career|careers|apply|application|learnership|internship|graduate|employment|opportunity|opportunities|looking for a job|looking for job|looking for work|find me a job|find jobs|available job|available jobs|job around|jobs around|job in|jobs in|work around|work in)\b/i.test(
+  // Be conservative: only match when user explicitly asks to find/apply for jobs
+  return /\b(find (me )? a job|looking for a job|looking for work|find jobs|vacanc(?:y|ies)|apply (for|to)|where can i apply|available job|available jobs|hiring\?)\b/i.test(
     t
   );
 }
@@ -1357,24 +1358,13 @@ async function handleCareerWorkspace(req, res) {
         postContext,
       });
 
+      // Do not short-circuit the AI flow if vision is not configured; continue
+      // to DeepSeek and attach the result as additional context.
       if (!vision.ok) {
-        const answer = vision.text || buildImageNoConfigAnswer();
-
-        return res.json({
-          ok: true,
-          answer,
-          reply: answer,
-          response: answer,
-          text: answer,
-          content: answer,
-          intent: 'image-analysis',
-          dateContext: date,
-          imageCount: images.length,
-          source: 'vision-not-configured',
-        });
+        imageAnalysis = vision.text || buildImageNoConfigAnswer();
+      } else {
+        imageAnalysis = vision.text;
       }
-
-      imageAnalysis = vision.text;
     }
 
     const canUseAi = true;
@@ -1390,14 +1380,10 @@ async function handleCareerWorkspace(req, res) {
     } else if (intent === 'image-analysis') {
       fallbackAnswer = imageAnalysis || buildImageNoConfigAnswer();
     } else {
-      fallbackAnswer = `I understand what you mean.
-
-Please give me one more detail so I can answer properly:
-- What result do you want?
-- Which location?
-- Is this about a job, business, CV, image, post, or company?
-
-Then I’ll give you a direct answer and next steps.`;
+      // Default fallback for when no specialized fallback applies. Most
+      // general queries should still flow to DeepSeek.
+      fallbackAnswer =
+        'I am having trouble reaching the AI service right now. Please try again in a moment.';
     }
 
     if (!canUseAi) {
@@ -1414,6 +1400,9 @@ Then I’ll give you a direct answer and next steps.`;
         source: 'fallback',
       });
     }
+
+    // Log prompt + intent for debugging
+    console.log('AI ROUTE HIT:', { prompt: userPrompt, intent });
 
     try {
       const out = await callDeepseekChat({
