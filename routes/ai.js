@@ -1,26 +1,1229 @@
 import { Router } from 'express';
-import https from 'https';
 import OpenAI from 'openai';
 
 const router = Router();
-// Force cloud DeepSeek usage for now to avoid broken local GPT4All constructor
-const useLocalAi = false;
+
+/* ---------------------------------------------
+   BASIC HELPERS
+--------------------------------------------- */
+
+function clean(value) {
+  return String(value || '').trim();
+}
+
+function stripMarkdownSymbols(text = '') {
+  return String(text || '')
+    .replace(/```/g, '')
+    .trim();
+}
+
+function getAiText(out) {
+  return clean(out?.choices?.[0]?.message?.content || '');
+}
+
+function isCreatorTier(tier, creatorPlus) {
+  const t = String(tier || '').toLowerCase();
+
+  return (
+    creatorPlus === true ||
+    t === 'creator+' ||
+    t === 'creator' ||
+    t === 'business' ||
+    t === 'exclusive'
+  );
+}
+
+function isProTier(tier) {
+  return String(tier || '').toLowerCase() === 'pro';
+}
+
+function toBoolean(value) {
+  if (value === true) return true;
+  if (value === false) return false;
+
+  const v = String(value || '').trim().toLowerCase();
+
+  return v === 'true' || v === '1' || v === 'yes' || v === 'on';
+}
+
+function getSouthAfricaDateContext() {
+  const now = new Date();
+  const timeZone = 'Africa/Johannesburg';
+
+  const readableDateTime = new Intl.DateTimeFormat('en-ZA', {
+    timeZone,
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(now);
+
+  const shortDate = new Intl.DateTimeFormat('en-ZA', {
+    timeZone,
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  }).format(now);
+
+  const isoDate = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(now);
+
+  return {
+    nowIso: now.toISOString(),
+    timeZone,
+    readableDateTime,
+    shortDate,
+    isoDate,
+  };
+}
+
+function normalizeUserPromptText(text = '') {
+  const raw = clean(text);
+
+  if (!raw.includes('USER QUESTION:')) return raw;
+
+  const parts = raw.split('USER QUESTION:');
+  return clean(parts[parts.length - 1]);
+}
+
+/* ---------------------------------------------
+   AI CLIENTS
+--------------------------------------------- */
+
+async function callDeepseekChat(payload) {
+  const apiKey = process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY;
+
+  if (!apiKey) {
+    throw new Error('DEEPSEEK_API_KEY or OPENAI_API_KEY missing');
+  }
+
+  const client = new OpenAI({
+    baseURL: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
+    apiKey,
+  });
+
+  const { model, messages, ...rest } = payload || {};
+
+  return client.chat.completions.create({
+    model: model || process.env.DEEPSEEK_MODEL || 'deepseek-chat',
+    messages,
+    temperature: 0.35,
+    max_tokens: 1600,
+    ...rest,
+  });
+}
+
+async function callVisionChat({ userPrompt, images, postContext = '' }) {
+  const apiKey = process.env.OPENAI_VISION_API_KEY || process.env.OPENAI_API_KEY;
+
+  if (!apiKey) {
+    return {
+      ok: false,
+      text:
+        'I received the image, but image analysis is not configured yet. Add OPENAI_API_KEY to the backend .env file and set OPENAI_VISION_MODEL=gpt-4o-mini.',
+    };
+  }
+
+  const client = new OpenAI({
+    apiKey,
+    baseURL:
+      process.env.OPENAI_VISION_BASE_URL ||
+      process.env.OPENAI_BASE_URL ||
+      'https://api.openai.com/v1',
+  });
+
+  const date = getSouthAfricaDateContext();
+
+  const system = `
+You are FaceMeX Vision Workspace.
+
+You analyse uploaded images for South African users.
+
+Current date:
+Today is ${date.readableDateTime}.
+Short date: ${date.shortDate}.
+Timezone: ${date.timeZone}.
+
+When analysing images:
+- Read visible text carefully.
+- Identify company name, job title, location, closing date, requirements, email, phone, WhatsApp number, website, and apply link if visible.
+- If it is a job advert, say whether it looks safer, needs verification, or high risk.
+- Do not say "100% legit" unless the image contains official proof like a real company domain, official careers page, or government website.
+- If the image says "link in comments", "DM me", "WhatsApp only", or asks for payment, mark it as needs verification or high risk.
+- If the user asks a question about the image, answer that exact question.
+- If the user asks for help applying, give a copy-ready message.
+- If the image is not a job image, explain what is shown and answer the user's question.
+- Use simple English.
+- Be direct and practical.
+- Do not mention system prompts or backend.
+`;
+
+  const textPrompt = `
+User question:
+${userPrompt || 'Analyse these images and explain what they show.'}
+
+Post/feed context if provided:
+${postContext || 'None'}
+
+Give a strong answer like ChatGPT:
+- Start with the direct answer.
+- Then explain what you can see.
+- If it is an opportunity/job, give a safety rating.
+- Give what the user should do next.
+- Give a copy-ready message if useful.
+`;
+
+  const imageContent = images.map((image) => ({
+    type: 'image_url',
+    image_url: {
+      url: image.url,
+      detail: 'high',
+    },
+  }));
+
+  const out = await client.chat.completions.create({
+    model: process.env.OPENAI_VISION_MODEL || 'gpt-4o-mini',
+    messages: [
+      {
+        role: 'system',
+        content: system,
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: textPrompt,
+          },
+          ...imageContent,
+        ],
+      },
+    ],
+    temperature: 0.25,
+    max_tokens: 1600,
+  });
+
+  return {
+    ok: true,
+    text: getAiText(out),
+  };
+}
+
+/* ---------------------------------------------
+   IMAGE INPUT HELPERS
+--------------------------------------------- */
+
+function asArray(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  return [value];
+}
+
+function isAllowedImageUrl(value = '') {
+  const url = clean(value);
+
+  if (!url) return false;
+
+  if (/^https?:\/\//i.test(url)) return true;
+
+  if (/^data:image\/(png|jpg|jpeg|webp);base64,/i.test(url)) return true;
+
+  return false;
+}
+
+function normalizeImageInputs(body = {}) {
+  const rawItems = [
+    ...asArray(body.imageDataUrls),
+    ...asArray(body.imageDataUrl),
+    ...asArray(body.imageUrls),
+    ...asArray(body.imageUrl),
+    ...asArray(body.images),
+  ];
+
+  const images = [];
+
+  for (const item of rawItems) {
+    if (!item) continue;
+
+    if (typeof item === 'string') {
+      const url = clean(item);
+
+      if (isAllowedImageUrl(url)) {
+        images.push({
+          url,
+          source: url.startsWith('data:') ? 'base64' : 'url',
+        });
+      }
+
+      continue;
+    }
+
+    if (typeof item === 'object') {
+      const url =
+        item.dataUrl ||
+        item.imageDataUrl ||
+        item.url ||
+        item.src ||
+        item.preview ||
+        item.imageUrl ||
+        '';
+
+      if (isAllowedImageUrl(url)) {
+        images.push({
+          url: clean(url),
+          source: String(url).startsWith('data:') ? 'base64' : 'url',
+          name: item.name || item.filename || '',
+        });
+      }
+    }
+  }
+
+  return images.slice(0, 4);
+}
+
+/* ---------------------------------------------
+   INTENT DETECTION
+--------------------------------------------- */
+
+function isDatePrompt(text = '') {
+  const t = clean(text).toLowerCase();
+
+  return (
+    t === 'date' ||
+    t === 'today' ||
+    t === 'what is today' ||
+    t === 'what is today?' ||
+    t === "what is today's date" ||
+    t === "what is today's date?" ||
+    /\b(today'?s date|today date|current date|date today|what date is it|what is the date|what's the date)\b/i.test(
+      t
+    )
+  );
+}
+
+function isBusinessPrompt(text = '') {
+  const t = clean(text).toLowerCase();
+
+  return /\b(start my own|start a business|my own business|business plan|logistics business|delivery business|courier business|transport business|make money|customers|pricing|profit|scale|marketing|business strategy|company growth|startup)\b/i.test(
+    t
+  );
+}
+
+function isCompanyVerificationPrompt(text = '') {
+  const t = clean(text).toLowerCase();
+
+  if (/\b(where can i start|start my own|business|logistics business)\b/i.test(t)) {
+    return false;
+  }
+
+  return /\b(is .* hiring|are .* hiring|hiring\?|is this legit|is it legit|legit|scam|fake|real or fake|verify|safe|risky|should i apply|can i trust|company hiring|cartrack|car track|sasol|rcl foods|pedros|shoprite|pick n pay|westfalia|zz2)\b/i.test(
+    t
+  );
+}
+
+function isPostSafetyPrompt(text = '') {
+  const t = clean(text).toLowerCase();
+
+  return /\b(this post|job post|screenshot|poster|advert|apply link|link in comments|comments below|dm me|inbox me|whatsapp only|pay|fee|registration fee|training fee|admin fee|processing fee|uniform fee)\b/i.test(
+    t
+  );
+}
+
+function isJobSearchPrompt(text = '') {
+  const t = clean(text).toLowerCase();
+
+  if (isBusinessPrompt(t)) return false;
+
+  return /\b(job|jobs|work|hiring|vacancy|vacancies|career|careers|apply|application|learnership|internship|graduate|employment|opportunity|opportunities|looking for a job|looking for job|looking for work|find me a job|find jobs|available job|available jobs|job around|jobs around|job in|jobs in|work around|work in)\b/i.test(
+    t
+  );
+}
+
+function isMisusePrompt(text = '') {
+  const t = clean(text).toLowerCase();
+
+  return /\b(hack|steal|bypass|phishing|crack password|malware|spyware|scam people|fake document|forge document|illegal|harm someone|hide evidence)\b/i.test(
+    t
+  );
+}
+
+function detectWorkspaceIntent(text = '', hasImages = false, postContext = '') {
+  const t = clean(text).toLowerCase();
+
+  if (hasImages) return 'image-analysis';
+  if (isDatePrompt(t)) return 'date';
+  if (isMisusePrompt(t)) return 'unsafe';
+  if (isCompanyVerificationPrompt(t)) return 'company-verification';
+  if (isPostSafetyPrompt(t) || postContext) return 'post-safety';
+  if (isBusinessPrompt(t)) return 'business-strategy';
+
+  const wantsBothEmailAndWhatsapp =
+    /(email|mail|send cv|send my cv|application email|cover letter)/i.test(t) &&
+    /(whatsapp|message|dm|sms|text)/i.test(t);
+
+  if (wantsBothEmailAndWhatsapp) return 'email-and-message';
+
+  if (
+    /(investor|investors|funding|funder|funders|grant|grants|venture|angel|vc|raise capital|capital|pitch|partnership|networking|accelerator|incubator)/i.test(
+      t
+    )
+  ) {
+    return 'investors-and-networking';
+  }
+
+  if (/(email|mail|cover letter|application email|send cv|send my cv|email cv)/i.test(t)) {
+    return 'email-application';
+  }
+
+  if (/(whatsapp|message|dm|sms|text|apply message)/i.test(t)) {
+    return 'message-application';
+  }
+
+  if (/(interview|tell me about yourself|questions|prepare|hiring manager)/i.test(t)) {
+    return 'interview-prep';
+  }
+
+  if (/(cv|resume|profile|linkedin|headline|summary|ats)/i.test(t)) {
+    return 'cv-profile';
+  }
+
+  if (isJobSearchPrompt(t)) return 'job-search';
+
+  if (/(research|find out|company|market|industry|business idea|analyse|analyze)/i.test(t)) {
+    return 'research';
+  }
+
+  return 'general';
+}
+
+/* ---------------------------------------------
+   CONTEXT EXTRACTION
+--------------------------------------------- */
+
+function extractUserTextFromBody(body = {}) {
+  if (!body || typeof body !== 'object') return '';
+
+  const direct =
+    body.message ||
+    body.prompt ||
+    body.question ||
+    body.input ||
+    body.text ||
+    body.query ||
+    '';
+
+  if (typeof direct === 'string' && direct.trim()) {
+    return direct.trim();
+  }
+
+  if (Array.isArray(body.messages)) {
+    const lastUserMessage = [...body.messages]
+      .reverse()
+      .find((msg) => msg?.role === 'user' && typeof msg?.content === 'string');
+
+    if (lastUserMessage?.content) {
+      return lastUserMessage.content.trim();
+    }
+  }
+
+  return '';
+}
+
+function extractPostContextFromBody(body = {}) {
+  if (!body || typeof body !== 'object') return '';
+
+  const possible =
+    body.postText ||
+    body.postContent ||
+    body.selectedPost ||
+    body.linkedPost ||
+    body.currentPost ||
+    body.feedPost ||
+    body.postContext ||
+    body.contextPost ||
+    '';
+
+  if (typeof possible === 'string') {
+    return possible.trim();
+  }
+
+  if (possible && typeof possible === 'object') {
+    const parts = [
+      possible.content,
+      possible.text,
+      possible.caption,
+      possible.description,
+      possible.title,
+      possible.authorName,
+      possible.userName,
+      possible.company,
+      possible.location,
+      possible.link,
+      possible.url,
+      possible.createdAt,
+    ]
+      .filter(Boolean)
+      .map((item) => String(item));
+
+    return parts.join('\n').trim();
+  }
+
+  if (Array.isArray(body.feedContext)) {
+    return body.feedContext
+      .slice(0, 5)
+      .map((post, index) => {
+        if (typeof post === 'string') return `Post ${index + 1}: ${post}`;
+
+        return `Post ${index + 1}:
+Author: ${post?.authorName || post?.userName || 'Unknown'}
+Content: ${post?.content || post?.text || post?.caption || ''}
+Link: ${post?.link || post?.url || ''}
+Date: ${post?.createdAt || ''}`;
+      })
+      .join('\n\n');
+  }
+
+  return '';
+}
+
+/* ---------------------------------------------
+   JOB / LINK HELPERS
+--------------------------------------------- */
+
+function extractLocation(text = '') {
+  const t = clean(text).toLowerCase();
+
+  const locations = [
+    'tzaneen',
+    'limpopo',
+    'polokwane',
+    'lenyenye',
+    'nkowankowa',
+    'maake plaza',
+    'maake',
+    'giyani',
+    'phalaborwa',
+    'modjadjiskloof',
+    'mankweng',
+    'mokopane',
+    'thohoyandou',
+    'burgersdorp',
+    'hoedspruit',
+    'secunda',
+    'gauteng',
+    'johannesburg',
+    'pretoria',
+    'durban',
+    'cape town',
+    'south africa',
+  ];
+
+  const found = locations.find((loc) => t.includes(loc));
+
+  if (!found) return 'South Africa';
+
+  return found
+    .split(' ')
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
+function extractJobType(text = '') {
+  const t = clean(text).toLowerCase();
+
+  const jobTypes = [
+    'inspector in training',
+    'general worker',
+    'cleaner',
+    'admin clerk',
+    'admin',
+    'administrative',
+    'clerk',
+    'driver',
+    'cashier',
+    'security',
+    'retail',
+    'sales',
+    'waiter',
+    'waitress',
+    'receptionist',
+    'call centre',
+    'data entry',
+    'learnership',
+    'internship',
+    'graduate',
+    'warehouse',
+    'store assistant',
+    'teacher assistant',
+    'nurse',
+    'clinic',
+    'municipality',
+    'government',
+    'restaurant',
+    'griller',
+    'packer',
+    'merchandiser',
+  ];
+
+  const found = jobTypes.find((job) => t.includes(job));
+  return found || 'jobs';
+}
+
+function makeSearchUrl(base, params) {
+  const url = new URL(base);
+
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && String(value).trim()) {
+      url.searchParams.set(key, String(value));
+    }
+  });
+
+  return url.toString();
+}
+
+function buildClickableJobLinks(userText = '') {
+  const location = extractLocation(userText);
+  const jobType = extractJobType(userText);
+  const query = `${jobType} ${location}`;
+
+  return [
+    {
+      name: 'Indeed',
+      label: `Indeed ${location} jobs`,
+      url: makeSearchUrl('https://za.indeed.com/jobs', {
+        q: query,
+        l: location,
+      }),
+      note: 'Good for general workers, admin, retail, cleaning, drivers, restaurants, and entry-level jobs.',
+    },
+    {
+      name: 'LinkedIn',
+      label: `LinkedIn ${location} jobs`,
+      url: makeSearchUrl('https://www.linkedin.com/jobs/search/', {
+        keywords: query,
+        location,
+      }),
+      note: 'Good for company-posted jobs, admin, office, sales, professional and retail roles.',
+    },
+    {
+      name: 'PNet',
+      label: 'PNet South Africa jobs',
+      url: 'https://www.pnet.co.za/jobs',
+      note: 'Search your job title and location inside the site.',
+    },
+    {
+      name: 'Careers24',
+      label: 'Careers24 jobs',
+      url: 'https://www.careers24.com/jobs/',
+      note: 'Useful for South African vacancies across many industries.',
+    },
+    {
+      name: 'CareerJunction',
+      label: 'CareerJunction jobs',
+      url: 'https://www.careerjunction.co.za/jobs',
+      note: 'Good for admin, sales, finance, office, IT, and skilled roles.',
+    },
+    {
+      name: 'DPSA',
+      label: 'DPSA government vacancies',
+      url: 'https://www.dpsa.gov.za/newsroom/psvc/',
+      note: 'Official South African government vacancy circulars.',
+    },
+    {
+      name: 'SAYouth',
+      label: 'SAYouth opportunities',
+      url: 'https://sayouth.mobi/',
+      note: 'Good for youth opportunities, learning programmes, entry-level work, and support.',
+    },
+    {
+      name: 'ESSA',
+      label: 'ESSA Department of Employment and Labour',
+      url: 'https://essa.labour.gov.za/EssaOnline/WebBeans/',
+      note: 'Official employment services platform from the Department of Employment and Labour.',
+    },
+  ];
+}
+
+function buildCompanySearchLinks(userText = '') {
+  const location = extractLocation(userText);
+  const cleaned = clean(userText)
+    .replace(/\?/g, '')
+    .replace(/\bis\b/gi, '')
+    .replace(/\bare\b/gi, '')
+    .replace(/\bhiring\b/gi, '')
+    .replace(/\bvacancy\b/gi, '')
+    .replace(/\bvacancies\b/gi, '')
+    .replace(/\bjobs\b/gi, '')
+    .replace(/\bjob\b/gi, '')
+    .replace(/\bin\b/gi, '')
+    .replace(/\baround\b/gi, '')
+    .replace(new RegExp(location, 'gi'), '')
+    .trim();
+
+  const company = cleaned || 'the company';
+
+  return [
+    {
+      name: 'Official careers search',
+      label: `${company} official careers`,
+      url: makeSearchUrl('https://www.google.com/search', {
+        q: `${company} official careers ${location}`,
+      }),
+      note: 'Use this to find the real company careers page.',
+    },
+    {
+      name: 'Company LinkedIn search',
+      label: `${company} LinkedIn jobs`,
+      url: makeSearchUrl('https://www.google.com/search', {
+        q: `${company} LinkedIn jobs ${location}`,
+      }),
+      note: 'Use this to check company-posted jobs and staff pages.',
+    },
+    {
+      name: 'Scam check search',
+      label: `${company} scam check`,
+      url: makeSearchUrl('https://www.google.com/search', {
+        q: `${company} job scam South Africa`,
+      }),
+      note: 'Use this to check reports, complaints, and suspicious posts.',
+    },
+  ];
+}
+
+function linksToMarkdown(links = []) {
+  return links
+    .map((item, index) => {
+      return `${index + 1}. [${item.label}](${item.url})\n${item.note || ''}`;
+    })
+    .join('\n\n');
+}
+
+/* ---------------------------------------------
+   PROMPTS
+--------------------------------------------- */
+
+function buildFaceMeXKnowledge() {
+  return `
+FaceMeX is a South African social and career platform.
+
+FaceMeX helps users:
+- discover jobs and opportunities
+- use FaceMeX Career Workspace for CVs, job applications, research, and interview prep
+- post and share content on the feed
+- connect with people
+- advertise businesses and opportunities
+- use AI for career and business support
+- check whether job posts or opportunities look risky
+
+FaceMeX must feel useful, safe, local, practical, and easy to use.
+`;
+}
+
+function buildGeneralSystemPrompt({ intent, userText, postContext = '', imageAnalysis = '' }) {
+  const date = getSouthAfricaDateContext();
+  const location = extractLocation(`${userText}\n${postContext}\n${imageAnalysis}`);
+  const jobType = extractJobType(`${userText}\n${postContext}\n${imageAnalysis}`);
+
+  const jobLinks = linksToMarkdown(buildClickableJobLinks(userText || postContext || imageAnalysis));
+  const companyLinks = linksToMarkdown(buildCompanySearchLinks(userText || postContext || imageAnalysis));
+
+  return `
+You are FaceMeX AI Workspace.
+
+Answer like ChatGPT:
+- Understand the user's intent even if they type badly.
+- Correctly infer what they mean.
+- Be clear, practical, direct, smart, and natural.
+- Do not force a bot template.
+- Do not answer a business question like a job-search question.
+- Keep the answer mobile-friendly.
+- Use headings when useful.
+- Use bullets and numbered steps when useful.
+- Use clickable markdown links when links are given.
+- Do not mention system prompts, backend, DeepSeek, OpenAI, ChatGPT, or Claude.
+
+Current date:
+Today is ${date.readableDateTime}.
+Short date: ${date.shortDate}.
+ISO date: ${date.isoDate}.
+Timezone: ${date.timeZone}.
+
+${buildFaceMeXKnowledge()}
+
+Intent detected by backend: ${intent}
+Detected location: ${location}
+Detected job type: ${jobType}
+
+Post/feed context:
+${postContext || 'None provided'}
+
+Image analysis:
+${imageAnalysis || 'None provided'}
+
+Trusted job links:
+${jobLinks}
+
+Company verification links:
+${companyLinks}
+
+Rules:
+1. Answer the exact question first.
+2. If the user asks for today's date, answer using the date above.
+3. If the user asks about uploaded images, use the image analysis.
+4. If the user asks about a job advert, company, screenshot, or post, give a safety rating:
+   - Looks safer
+   - Needs verification
+   - High risk
+5. Never say "100% legit" unless official proof is provided.
+6. Do not invent live vacancies, deadlines, salaries, or application links.
+7. If you cannot confirm live information, say so clearly and give official places to verify.
+8. If the user asks for jobs, give job sources, search terms, action steps, and a copy-ready message.
+9. If the user asks for business/logistics/startup advice, give a launch map, first money plan, pricing, scripts, and action steps.
+10. If the user asks for FaceMeX help, explain how to use FaceMeX clearly.
+11. If the request is unsafe, refuse briefly and redirect to a safe action.
+`;
+}
+
+/* ---------------------------------------------
+   FALLBACK ANSWERS
+--------------------------------------------- */
+
+function buildDateAnswer() {
+  const date = getSouthAfricaDateContext();
+  return `Today's date is ${date.shortDate}.`;
+}
+
+function buildJobFallbackAnswer(userText = '') {
+  const date = getSouthAfricaDateContext();
+  const location = extractLocation(userText);
+  const jobType = extractJobType(userText);
+  const links = linksToMarkdown(buildClickableJobLinks(userText));
+
+  return `Start with places where ${location} jobs are most likely to appear fast.
+
+Today’s date is ${date.shortDate}.
+
+## 1. Online job sites — check every morning
+
+Use these first because companies post there often:
+
+${links}
+
+## 2. Search these words
+
+Use these exact searches:
+
+- "${jobType} ${location}"
+- "general worker ${location}"
+- "admin clerk ${location}"
+- "cleaner ${location}"
+- "driver jobs ${location}"
+- "retail jobs ${location}"
+- "learnership ${location}"
+
+## 3. Apply directly to local employers
+
+Check shops, malls, fast food places, farms, packhouses, car dealerships, pharmacies, clinics, and local businesses around ${location}.
+
+## Simple message to send
+
+Good day, my name is [Your Name]. I am looking for employment in ${location}. I am hardworking, reliable, willing to learn, and available immediately. Please may I ask if you are hiring or accepting CVs?
+
+## Important warning
+
+Do not pay anyone for a job application. Real companies do not ask for application fees, training fees, or money to secure an interview.`;
+}
+
+function buildBusinessFallbackAnswer(userText = '') {
+  const location = extractLocation(userText);
+
+  return `Start your business where customers already move every day, not where rent is cheap.
+
+## Best place to start in ${location}
+
+Start with the busiest pickup and delivery zones:
+
+1. ${location} CBD
+2. Shopping centres
+3. Fast food outlets
+4. Pharmacies and clinics
+5. Laundry shops
+6. Phone repair shops
+7. Spaza shops
+8. Offices and small businesses
+
+## Simplest version that can make money today
+
+Do not start with trucks. Start with small logistics:
+
+Service offer:
+“We collect and deliver food, parcels, groceries, documents, and business orders around ${location}.”
+
+Start with these 5 services:
+
+1. Food collection from restaurants
+2. Parcel delivery from shops to customers
+3. CV/document drop-off
+4. Grocery pickup
+5. Pharmacy/clinic errands
+
+## Simple pricing formula
+
+Base price = fuel + driver time + company profit
+
+Easy starting prices:
+
+- 0–2 km: R30–R40
+- 3–5 km: R50–R70
+- 6–10 km: R80–R120
+- Urgent order: add R30–R50
+- Waiting longer than 10 minutes: add R30
+
+## Customer message
+
+Good day. I run a local delivery service around ${location}. We collect and deliver food, parcels, groceries, documents, and business orders. Same-day delivery is available. Can I send you our price list?
+
+## Tomorrow morning action plan
+
+1. Make a WhatsApp poster.
+2. Visit 10 shops.
+3. Visit 5 fast food places.
+4. Visit 3 pharmacies.
+5. Ask every business if they need collections or deliveries.
+6. Post in local Facebook and WhatsApp groups.
+7. Track every customer in a simple notebook or Google Sheet.
+
+Do not wait for everything to be perfect. Start small, collect cash flow, then build systems.`;
+}
+
+function buildCompanyVerificationFallback(userText = '') {
+  const companyLinks = linksToMarkdown(buildCompanySearchLinks(userText));
+
+  return `I can help you verify this, but I cannot confirm a live vacancy unless the official company page or post details are provided.
+
+## What to do first
+
+Check the company through official sources, not only WhatsApp, Facebook screenshots, or reposts.
+
+${companyLinks}
+
+## Safety rating
+
+Needs verification.
+
+It becomes safer if:
+- the job appears on the official company careers page
+- the email uses the company domain
+- the application link goes to the official company website
+- no one asks for money
+
+It becomes high risk if:
+- they ask for payment
+- they use Gmail/WhatsApp only
+- they hide the apply link
+- they say “link in comments”
+- they rush you
+- they ask for ID/bank details too early
+
+## Message to send
+
+Good day. I saw a vacancy/post linked to your company. Please may you confirm if this opportunity is official and where I can apply through the correct company channel?
+
+## Important
+
+Never pay for a job application.`;
+}
+
+function buildImageNoConfigAnswer() {
+  return `I received the image, but FaceMeX backend cannot truly analyse images yet because the vision API key is not configured.
+
+## Fix this
+
+Add this to your backend .env:
+
+OPENAI_API_KEY=your_openai_key_here
+OPENAI_VISION_MODEL=gpt-4o-mini
+
+Then redeploy your backend.
+
+## Also update server.js
+
+Make sure your backend can receive image data:
+
+app.use(express.json({ limit: '30mb' }));
+
+After that, FaceMeX Workspace will be able to read job posters, screenshots, adverts, documents, and images.`;
+}
+
+function buildUnsafeAnswer() {
+  return `I can’t help with that request.
+
+I can help you do it safely instead — for example, checking whether a job post is real, protecting your account, reporting a scam, or writing a proper message to a company.`;
+}
+
+/* ---------------------------------------------
+   CV TEMPLATE HELPERS
+--------------------------------------------- */
+
+function titleCaseWords(text = '') {
+  return clean(text)
+    .toLowerCase()
+    .split(/\s+/)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
+function splitList(value = '') {
+  return clean(value)
+    .split(/[,;\n/]+/)
+    .map((item) => clean(item))
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
+function professionalizeSummary(summary = '') {
+  const raw = clean(summary);
+
+  if (!raw) {
+    return 'Reliable and motivated candidate with strong communication, teamwork, and customer service skills. Able to work under pressure, follow instructions, and complete tasks on time. Eager to contribute positively in a professional environment and grow through practical experience.';
+  }
+
+  const lower = raw.toLowerCase();
+
+  if (lower.includes('media') || lower.includes('team management')) {
+    return 'Motivated and detail-oriented professional with experience in media management, team coordination, customer service, and communication. Skilled at supporting daily operations, organising tasks, working with people, and contributing to a productive team environment.';
+  }
+
+  if (lower.includes('driver') || lower.includes('code 10') || lower.includes('code 14')) {
+    return 'Reliable and safety-conscious driver with strong route awareness, time management, and customer service skills. Able to follow instructions, handle responsibilities professionally, and complete deliveries or transport duties on time.';
+  }
+
+  return raw
+    .replace(/\bi\b/g, 'I')
+    .replace(/\bteam management\b/gi, 'team coordination')
+    .replace(/\benglish fluently\b/gi, 'English: Fluent')
+    .replace(/\bsepedi mothers? tangue\b/gi, 'Sepedi: Mother tongue')
+    .replace(/\bsepedi mothers? tongue\b/gi, 'Sepedi: Mother tongue')
+    .replace(/\bcode 10 drive\b/gi, 'Driver’s licence: Code 10')
+    .replace(/\bcode 14 drive\b/gi, 'Driver’s licence: Code 14');
+}
+
+function professionalizeSkills(skills = '') {
+  const items = splitList(skills);
+
+  if (!items.length) {
+    return [
+      'Customer service and support',
+      'Team collaboration and communication',
+      'Time management and organisation',
+      'Problem solving',
+      'Computer literacy',
+      'Workplace discipline',
+    ];
+  }
+
+  return items.map((item) => {
+    const lower = item.toLowerCase();
+
+    if (lower.includes('team management')) return 'Team coordination and leadership';
+    if (lower.includes('customer')) return 'Customer service and support';
+    if (lower.includes('social media')) return 'Social media management';
+    if (lower.includes('media')) return 'Media management';
+    if (lower.includes('inventory')) return 'Inventory control';
+    if (lower.includes('stock')) return 'Stock management';
+    if (lower.includes('code 10')) return 'Driver’s licence: Code 10';
+    if (lower.includes('code 14')) return 'Driver’s licence: Code 14';
+    if (lower.includes('english')) return 'English communication';
+    if (lower.includes('sepedi')) return 'Sepedi communication';
+
+    return titleCaseWords(item);
+  });
+}
+
+function professionalizeExtras(extras = '') {
+  const raw = clean(extras);
+
+  const technicalSkills = [];
+  const languages = [];
+
+  if (!raw) {
+    return {
+      technicalSkills: ['MS Office', 'Basic computer literacy', 'Email communication'],
+      languages: ['English: Fluent', 'Sepedi: Mother tongue'],
+    };
+  }
+
+  const lower = raw.toLowerCase();
+
+  if (lower.includes('english')) languages.push('English: Fluent');
+  if (lower.includes('sepedi')) languages.push('Sepedi: Mother tongue');
+  if (lower.includes('zulu')) languages.push('Zulu: Conversational');
+  if (lower.includes('xitsonga') || lower.includes('tsonga')) languages.push('itsonga: Conversational');
+
+  if (lower.includes('computer')) technicalSkills.push('Basic computer literacy');
+  if (lower.includes('ms office') || lower.includes('word') || lower.includes('excel')) technicalSkills.push('MS Office');
+  if (lower.includes('social media')) technicalSkills.push('Social media management');
+  if (lower.includes('email')) technicalSkills.push('Email communication');
+
+  const licenceMatches = raw.match(/code\s*\d+/gi) || [];
+  for (const match of licenceMatches) {
+    technicalSkills.push(`Driver’s licence: ${match.replace(/\s+/g, ' ').toUpperCase()}`);
+  }
+
+  if (!technicalSkills.length) {
+    technicalSkills.push('Basic computer literacy');
+  }
+
+  if (!languages.length) {
+    languages.push('English: Fluent');
+  }
+
+  return {
+    technicalSkills: [...new Set(technicalSkills)].slice(0, 5),
+    languages: [...new Set(languages)].slice(0, 4),
+  };
+}
+
+function professionalizeExperience(experience = '') {
+  const raw = clean(experience);
+
+  if (!raw) {
+    return `[Job Title] | [Company Name] | [Year]
+- Supported daily workplace tasks and followed instructions from supervisors.
+- Assisted customers, team members, or management in a professional manner.
+- Completed assigned duties on time and maintained a reliable work ethic.`;
+  }
+
+  const lower = raw.toLowerCase();
+
+  if (lower.includes('ceo') && lower.includes('facemex')) {
+    return `CEO / Founder | FaceMeX | 2025 – Present
+- Built and managed a digital platform focused on social networking, career tools, and business opportunities.
+- Collected user feedback to improve features, mobile layout, and AI-powered tools.
+- Managed product testing, content planning, user support, and platform improvements.`;
+  }
+
+  if (lower.includes('driver') || lower.includes('truck')) {
+    return `Driver | [Company Name] | [Year]
+- Transported goods or passengers safely while following road and company rules.
+- Planned routes, managed time effectively, and completed trips or deliveries on schedule.
+- Communicated professionally with customers, team members, and supervisors.`;
+  }
+
+  if (!raw.includes('-')) {
+    return `${raw}
+- Supported daily tasks and contributed to smooth operations.
+- Communicated professionally with customers, colleagues, or supervisors.
+- Completed duties on time and showed reliability in the workplace.`;
+  }
+
+  return raw;
+}
+
+function professionalizeEducation(education = '') {
+  const raw = clean(education);
+
+  if (!raw) {
+    return '[School / College / Institution] | [Qualification] | [Year]';
+  }
+
+  return raw
+    .replace(/\bTVT\b/gi, 'TVET')
+    .replace(/\btvt\b/gi, 'TVET')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function buildClassicA4CvTemplate({
+  fullName = '',
+  email = '',
+  phone = '',
+  location = '',
+  idNumber = '',
+  showIdOnCv = false,
+  summary = '',
+  experience = '',
+  skills = '',
+  education = '',
+  extras = '',
+}) {
+  const name = clean(fullName) || '[YOUR NAME]';
+  const cleanEmail = clean(email) || 'your.email@example.com';
+  const cleanPhone = clean(phone) || '+27 00 000 0000';
+  const cleanLocation = clean(location) || 'Your City, South Africa';
+
+  const finalSummary = professionalizeSummary(summary);
+  const finalSkills = professionalizeSkills(skills);
+  const finalExperience = professionalizeExperience(experience);
+  const finalEducation = professionalizeEducation(education);
+  const extraData = professionalizeExtras(extras);
+
+  const profileLine =
+    showIdOnCv && clean(idNumber)
+      ? `Address: ${cleanLocation} | Contact: ${cleanPhone} | Email: ${cleanEmail} | Profile ID: ${clean(idNumber)}`
+      : `Address: ${cleanLocation} | Contact: ${cleanPhone} | Email: ${cleanEmail}`;
+
+  return `${name.toUpperCase()}
+${profileLine}
+
+PROFESSIONAL SUMMARY
+${finalSummary}
+
+CORE COMPETENCIES
+${finalSkills.map((item) => `- ${item}`).join('\n')}
+
+PROFESSIONAL EXPERIENCE
+${finalExperience}
+
+EDUCATION
+${finalEducation}
+
+TECHNICAL SKILLS
+${extraData.technicalSkills.map((item) => `- ${item}`).join('\n')}
+
+LANGUAGES
+${extraData.languages.map((item) => `- ${item}`).join('\n')}
+
+REFERENCES
+Available Upon Request`;
+}
+
+/* ---------------------------------------------
+   IMAGE CAPTION HELPERS
+--------------------------------------------- */
 
 async function fetchAsBase64(url) {
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`Failed to fetch media: ${res.status}`);
+
+  if (!res.ok) {
+    throw new Error(`Failed to fetch media: ${res.status}`);
+  }
+
   const buf = Buffer.from(await res.arrayBuffer());
   return buf.toString('base64');
 }
 
 function parseDataUrl(dataUrl) {
-  const m = String(dataUrl || '').match(/^data:([^;]+);base64,(.+)$/);
-  if (!m) return null;
-  return { mime: m[1], base64: m[2] };
+  const match = String(dataUrl || '').match(/^data:([^;]+);base64,(.+)$/);
+
+  if (!match) return null;
+
+  return {
+    mime: match[1],
+    base64: match[2],
+  };
 }
 
 async function captionImageWithHF({ imageUrl, imageDataUrl }) {
   const apiKey = process.env.HF_API_KEY;
+
   if (!apiKey) {
     throw new Error('HF_API_KEY missing');
   }
@@ -29,9 +1232,14 @@ async function captionImageWithHF({ imageUrl, imageDataUrl }) {
 
   let base64 = '';
   let mime = 'image/jpeg';
+
   if (imageDataUrl) {
     const parsed = parseDataUrl(imageDataUrl);
-    if (!parsed) throw new Error('Invalid imageDataUrl');
+
+    if (!parsed) {
+      throw new Error('Invalid imageDataUrl');
+    }
+
     base64 = parsed.base64;
     mime = parsed.mime || mime;
   } else if (imageUrl) {
@@ -46,22 +1254,273 @@ async function captionImageWithHF({ imageUrl, imageDataUrl }) {
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ inputs: { image: `data:${mime};base64,${base64}` } }),
+    body: JSON.stringify({
+      inputs: {
+        image: `data:${mime};base64,${base64}`,
+      },
+    }),
   });
 
   const data = await resp.json().catch(() => null);
+
   if (!resp.ok) {
     throw new Error(data?.error || `HF error ${resp.status}`);
   }
 
-  // HF can return: [{ generated_text: "..." }] or { generated_text: "..." }
   const caption = Array.isArray(data)
-    ? (data?.[0]?.generated_text || data?.[0]?.caption || '')
-    : (data?.generated_text || data?.caption || '');
-  return String(caption || '').trim();
+    ? data?.[0]?.generated_text || data?.[0]?.caption || ''
+    : data?.generated_text || data?.caption || '';
+
+  return clean(caption);
 }
 
-// Generate a post from media (image or video keyframe) + optional user text using DeepSeek
+/* ---------------------------------------------
+   WORKSPACE HANDLER
+--------------------------------------------- */
+
+async function handleCareerWorkspace(req, res) {
+  try {
+    const {
+      prompt = '',
+      role = '',
+      location = '',
+      preferences = '',
+      experienceLevel = '',
+      industry = '',
+      workMode = '',
+      company = '',
+      contactPerson = '',
+      tier = 'free',
+      creatorPlus,
+    } = req.body || {};
+
+    const userPrompt = normalizeUserPromptText(
+      prompt ||
+        req.body?.message ||
+        req.body?.question ||
+        req.body?.input ||
+        req.body?.text ||
+        ''
+    );
+
+    const postContext = extractPostContextFromBody(req.body);
+    const images = normalizeImageInputs(req.body);
+    const hasImages = images.length > 0;
+    const intent = detectWorkspaceIntent(userPrompt, hasImages, postContext);
+    const date = getSouthAfricaDateContext();
+
+    if (!userPrompt && !hasImages && !postContext) {
+      return res.status(400).json({
+        ok: false,
+        answer: 'Please type what you need help with or upload an image.',
+      });
+    }
+
+    if (intent === 'unsafe') {
+      const answer = buildUnsafeAnswer();
+
+      return res.json({
+        ok: true,
+        answer,
+        reply: answer,
+        response: answer,
+        text: answer,
+        content: answer,
+        intent,
+        dateContext: date,
+        source: 'safe-refusal',
+      });
+    }
+
+    if (intent === 'date') {
+      const answer = buildDateAnswer();
+
+      return res.json({
+        ok: true,
+        answer,
+        reply: answer,
+        response: answer,
+        text: answer,
+        content: answer,
+        intent,
+        dateContext: date,
+        source: 'date-direct',
+      });
+    }
+
+    let imageAnalysis = '';
+
+    if (hasImages) {
+      const vision = await callVisionChat({
+        userPrompt,
+        images,
+        postContext,
+      });
+
+      if (!vision.ok) {
+        const answer = vision.text || buildImageNoConfigAnswer();
+
+        return res.json({
+          ok: true,
+          answer,
+          reply: answer,
+          response: answer,
+          text: answer,
+          content: answer,
+          intent: 'image-analysis',
+          dateContext: date,
+          imageCount: images.length,
+          source: 'vision-not-configured',
+        });
+      }
+
+      imageAnalysis = vision.text;
+    }
+
+    const canUseAi = true;
+
+    let fallbackAnswer = '';
+
+    if (intent === 'job-search') {
+      fallbackAnswer = buildJobFallbackAnswer(userPrompt);
+    } else if (intent === 'business-strategy') {
+      fallbackAnswer = buildBusinessFallbackAnswer(userPrompt);
+    } else if (intent === 'company-verification' || intent === 'post-safety') {
+      fallbackAnswer = buildCompanyVerificationFallback(userPrompt || postContext);
+    } else if (intent === 'image-analysis') {
+      fallbackAnswer = imageAnalysis || buildImageNoConfigAnswer();
+    } else {
+      fallbackAnswer = `I understand what you mean.
+
+Please give me one more detail so I can answer properly:
+- What result do you want?
+- Which location?
+- Is this about a job, business, CV, image, post, or company?
+
+Then I’ll give you a direct answer and next steps.`;
+    }
+
+    if (!canUseAi) {
+      return res.json({
+        ok: true,
+        answer: fallbackAnswer,
+        reply: fallbackAnswer,
+        response: fallbackAnswer,
+        text: fallbackAnswer,
+        content: fallbackAnswer,
+        intent,
+        dateContext: date,
+        links: buildClickableJobLinks(userPrompt || postContext || imageAnalysis),
+        source: 'fallback',
+      });
+    }
+
+    try {
+      const out = await callDeepseekChat({
+        messages: [
+          {
+            role: 'system',
+            content: buildGeneralSystemPrompt({
+              intent,
+              userText: userPrompt,
+              postContext,
+              imageAnalysis,
+            }),
+          },
+          {
+            role: 'user',
+            content: `
+User request:
+${userPrompt || 'The user uploaded images and needs help.'}
+
+Optional fields:
+Role: ${role || 'Not provided'}
+Location: ${location || 'Not provided'}
+Industry: ${industry || 'Not provided'}
+Work mode: ${workMode || 'Not provided'}
+Experience level: ${experienceLevel || 'Not provided'}
+Company: ${company || 'Not provided'}
+Contact person: ${contactPerson || 'Not provided'}
+Preferences: ${preferences || 'Not provided'}
+
+Post context:
+${postContext || 'None'}
+
+Image analysis:
+${imageAnalysis || 'None'}
+
+Now answer the user according to their real intent.
+`,
+          },
+        ],
+        temperature: 0.35,
+        max_tokens: 1800,
+      });
+
+      const answer = stripMarkdownSymbols(getAiText(out)) || fallbackAnswer;
+
+      return res.json({
+        ok: true,
+        answer,
+        reply: answer,
+        response: answer,
+        text: answer,
+        content: answer,
+        intent,
+        dateContext: date,
+        imageAnalysis,
+        imageCount: images.length,
+        links:
+          intent === 'company-verification' || intent === 'post-safety'
+            ? buildCompanySearchLinks(userPrompt || postContext || imageAnalysis)
+            : buildClickableJobLinks(userPrompt || postContext || imageAnalysis),
+        source: imageAnalysis ? 'vision-plus-deepseek' : 'deepseek',
+      });
+    } catch (e) {
+      console.error('workspace deepseek error', e);
+
+      const answer = imageAnalysis || fallbackAnswer;
+
+      return res.json({
+        ok: true,
+        answer,
+        reply: answer,
+        response: answer,
+        text: answer,
+        content: answer,
+        intent,
+        dateContext: date,
+        imageAnalysis,
+        imageCount: images.length,
+        links:
+          intent === 'company-verification' || intent === 'post-safety'
+            ? buildCompanySearchLinks(userPrompt || postContext || imageAnalysis)
+            : buildClickableJobLinks(userPrompt || postContext || imageAnalysis),
+        source: imageAnalysis ? 'vision-fallback' : 'fallback',
+      });
+    }
+  } catch (err) {
+    console.error('workspace error', err);
+
+    const answer =
+      'FaceMeX AI is temporarily unavailable. Please try again shortly.';
+
+    return res.json({
+      ok: true,
+      answer,
+      reply: answer,
+      response: answer,
+      text: answer,
+      content: answer,
+      source: 'error-fallback',
+    });
+  }
+}
+
+/* ---------------------------------------------
+   POST FROM MEDIA
+--------------------------------------------- */
+
 router.post('/post-from-media', async (req, res) => {
   try {
     const {
@@ -72,13 +1531,18 @@ router.post('/post-from-media', async (req, res) => {
       imageDataUrl = '',
     } = req.body || {};
 
-    const hasImage = Boolean((imageUrl || '').toString().trim() || (imageDataUrl || '').toString().trim());
-    if (!hasImage && !(text || '').toString().trim()) {
-      return res.status(400).json({ ok: false, error: 'Provide text and/or imageUrl/imageDataUrl' });
+    const hasImage = Boolean(clean(imageUrl) || clean(imageDataUrl));
+
+    if (!hasImage && !clean(text)) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Provide text and/or imageUrl/imageDataUrl',
+      });
     }
 
     let caption = '';
     let captionSource = 'none';
+
     if (hasImage) {
       try {
         caption = await captionImageWithHF({ imageUrl, imageDataUrl });
@@ -91,21 +1555,33 @@ router.post('/post-from-media', async (req, res) => {
     }
 
     const mode = postMode === 'professional' ? 'professional' : 'social';
-    const cleanedText = (text || '').toString().trim();
+    const cleanedText = clean(text);
 
-    const system = `You are FaceMe AI, a world-class social media writer.\n\nWrite ONE post for FaceMe.\nRules:\n- The post MUST match the media description when provided.\n- Do not invent specific facts not supported by the media or text.\n- If mode is professional, write polished and business-appropriate; otherwise write casual and engaging.\n- Include 2–4 relevant hashtags at the end ONLY if it feels natural.\n- Keep it concise (max ~220 characters unless professional mode needs slightly longer).\n- Output plain text only.`;
+    const system = `You are FaceMeX AI, a world-class social media writer.
 
-    const user = `MODE: ${mode}\nTONE: ${tone}\n\nMEDIA_DESCRIPTION: ${caption || '[none]'}\n\nUSER_CONTEXT: ${cleanedText || '[none]'}\n\nGenerate the post now.`;
+Write ONE post for FaceMeX.
 
-    if (useLocalAi) {
-      const { askChat } = await import('../services/aiService.js');
-      const out = await askChat(`${system}\n\n${user}`);
-      const post = (out || '').toString().trim();
-      return res.json({ ok: true, post, caption, captionSource, source: 'deepseek-local' });
-    }
+Rules:
+- Match the media description when provided.
+- Do not invent facts not supported by the media or text.
+- If mode is professional, write polished and business-appropriate.
+- If mode is social, write casual and engaging.
+- Include 2 to 4 relevant hashtags only if natural.
+- Keep it concise.
+- Output plain text only.`;
+
+    const user = `MODE: ${mode}
+TONE: ${tone}
+
+MEDIA_DESCRIPTION:
+${caption || '[none]'}
+
+USER_CONTEXT:
+${cleanedText || '[none]'}
+
+Generate the post now.`;
 
     const out = await callDeepseekChat({
-      model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
       messages: [
         { role: 'system', content: system },
         { role: 'user', content: user },
@@ -113,15 +1589,28 @@ router.post('/post-from-media', async (req, res) => {
       temperature: 0.85,
       max_tokens: 180,
     });
-    const post = (out.choices?.[0]?.message?.content || '').trim();
-    return res.json({ ok: true, post, caption, captionSource, source: 'deepseek-api' });
+
+    return res.json({
+      ok: true,
+      post: getAiText(out),
+      caption,
+      captionSource,
+      source: 'deepseek-api',
+    });
   } catch (err) {
     console.error('post-from-media error', err);
-    return res.status(500).json({ ok: false, error: err.message || 'post-from-media failed' });
+
+    return res.status(500).json({
+      ok: false,
+      error: err.message || 'post-from-media failed',
+    });
   }
 });
 
-// Generate a context-aware comment for a post using DeepSeek
+/* ---------------------------------------------
+   AI COMMENT
+--------------------------------------------- */
+
 router.post('/comment', async (req, res) => {
   try {
     const {
@@ -132,28 +1621,36 @@ router.post('/comment', async (req, res) => {
       language = 'auto',
     } = req.body || {};
 
-    const cleanedPost = (postText || '').toString().trim();
+    const cleanedPost = clean(postText);
+
     if (!cleanedPost) {
-      return res.status(400).json({ ok: false, error: 'postText is required' });
+      return res.status(400).json({
+        ok: false,
+        error: 'postText is required',
+      });
     }
 
     const maxWords = String(length).toLowerCase() === 'long' ? 45 : 20;
-    const authorHint = (author || '').toString().trim();
-    const langHint = String(language || 'auto').trim();
+    const authorHint = clean(author);
+    const langHint = clean(language) || 'auto';
 
-    const system = `You are FaceMe AI. Write a high-quality social media comment that directly matches the post content.\n\nRules:\n- Be natural, human, and non-cringe.\n- Do NOT repeat the post verbatim.\n- Do NOT invent facts that are not implied by the post.\n- Keep it ${tone} and supportive (unless the post is negative; then be empathetic).\n- Max ${maxWords} words.\n- No hashtags unless the post explicitly uses hashtags.\n- If the post is a question, answer it briefly and ask one follow-up question.\n- If the post is an achievement, congratulate and ask a relevant question.\n- If the post is emotional, validate feelings and respond gently.\n- Language: ${langHint === 'auto' ? 'match the language of the post' : langHint}.`;
+    const system = `You are FaceMeX AI. Write a high-quality social media comment that directly matches the post content.
 
-    const user = `POST${authorHint ? ` (by ${authorHint})` : ''}:\n${cleanedPost}\n\nReturn ONLY the comment text.`;
+Rules:
+- Be natural, human, and non-cringe.
+- Do not repeat the post verbatim.
+- Do not invent facts.
+- Keep it ${tone} and supportive.
+- Max ${maxWords} words.
+- No hashtags unless the post uses hashtags.
+- If the post is a question, answer briefly and ask one follow-up question.
+- Language: ${langHint === 'auto' ? 'match the language of the post' : langHint}.
+- Return only the comment text.`;
 
-    if (useLocalAi) {
-      const { askChat } = await import('../services/aiService.js');
-      const out = await askChat(`${system}\n\n${user}`);
-      const comment = (out || '').toString().trim();
-      return res.json({ ok: true, comment, source: 'deepseek-local' });
-    }
+    const user = `POST${authorHint ? ` by ${authorHint}` : ''}:
+${cleanedPost}`;
 
     const out = await callDeepseekChat({
-      model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
       messages: [
         { role: 'system', content: system },
         { role: 'user', content: user },
@@ -162,468 +1659,382 @@ router.post('/comment', async (req, res) => {
       max_tokens: 120,
     });
 
-    const comment = (out.choices?.[0]?.message?.content || '').trim();
-    return res.json({ ok: true, comment, source: 'deepseek-api' });
+    return res.json({
+      ok: true,
+      comment: getAiText(out),
+      source: 'deepseek-api',
+    });
   } catch (err) {
     console.error('ai comment error', err);
-    return res.status(500).json({ ok: false, error: err.message || 'AI comment failed' });
+
+    return res.status(500).json({
+      ok: false,
+      error: err.message || 'AI comment failed',
+    });
   }
 });
 
-router.get('/test', async (req, res) => {
+/* ---------------------------------------------
+   TEST ROUTES
+--------------------------------------------- */
+
+router.get('/test', async (_req, res) => {
   try {
-    let response = '';
-    if (useLocalAi) {
-      const { askChat } = await import('../services/aiService.js');
-      response = await askChat('Say hi, you are connected to DeepSeek.');
-    } else {
-      const out = await callDeepseekChat({
-        model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-        messages: [
-          { role: 'user', content: 'Say hi, you are connected to DeepSeek.' },
-        ],
-      });
-      response = out.choices?.[0]?.message?.content || JSON.stringify(out);
-    }
-    res.json({ success: true, response });
+    const out = await callDeepseekChat({
+      messages: [
+        {
+          role: 'user',
+          content: 'Say: FaceMeX AI is connected.',
+        },
+      ],
+      max_tokens: 80,
+    });
+
+    return res.json({
+      success: true,
+      response: getAiText(out),
+      source: 'deepseek-api',
+    });
   } catch (err) {
-    res.json({ success: false, error: err.message });
+    return res.json({
+      success: false,
+      error: err.message,
+    });
   }
 });
 
-// Generate a reply using local DeepSeek via GPT4All
+router.get('/runtime-context', (req, res) => {
+  const query = clean(req.query.q || 'jobs South Africa');
+
+  return res.json({
+    ok: true,
+    dateContext: getSouthAfricaDateContext(),
+    detectedLocation: extractLocation(query),
+    detectedJobType: extractJobType(query),
+    links: buildClickableJobLinks(query),
+    visionConfigured: Boolean(process.env.OPENAI_VISION_API_KEY || process.env.OPENAI_API_KEY),
+  });
+});
+
+router.get('/job-search-links', (req, res) => {
+  const query = clean(req.query.q || 'jobs South Africa');
+
+  return res.json({
+    ok: true,
+    query,
+    detectedLocation: extractLocation(query),
+    detectedJobType: extractJobType(query),
+    dateContext: getSouthAfricaDateContext(),
+    links: buildClickableJobLinks(query),
+  });
+});
+
+/* ---------------------------------------------
+   REPLY
+--------------------------------------------- */
+
 router.post('/reply', async (req, res) => {
   try {
     const { message = '', style = '' } = req.body || {};
-    const prompt = `You are a helpful assistant. Follow the user style strictly.\nStyle: ${style}\nReply concisely to: "${message}"`;
-    if (useLocalAi) {
-      const { askChat } = await import('../services/aiService.js');
-      const response = await askChat(prompt);
-      return res.json({ success: true, response });
-    } else {
-      // Cloud path: prefer Llama, fall back to DeepSeek if needed
-      try {
-        const out = await callLlamaChat({
-          messages: [{ role: 'user', content: prompt }],
-        });
-        const response = out.choices?.[0]?.message?.content || '';
-        if (response) {
-          return res.json({ success: true, response, source: 'llama-api' });
-        }
-      } catch (e) {
-        console.error('reply llama error', e);
-      }
+    const cleanedMessage = normalizeUserPromptText(message);
+    const date = getSouthAfricaDateContext();
 
-      const out = await callDeepseekChat({
-        model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-        messages: [
-          { role: 'user', content: prompt },
-        ],
+    if (isDatePrompt(cleanedMessage)) {
+      return res.json({
+        success: true,
+        response: buildDateAnswer(),
+        source: 'date-direct',
       });
-      const response = out.choices?.[0]?.message?.content || '';
-      return res.json({ success: true, response, source: 'deepseek-api' });
     }
+
+    const intent = detectWorkspaceIntent(cleanedMessage, false, '');
+
+    try {
+      const out = await callDeepseekChat({
+        messages: [
+          {
+            role: 'system',
+            content: buildGeneralSystemPrompt({
+              intent,
+              userText: cleanedMessage,
+            }),
+          },
+          {
+            role: 'user',
+            content: cleanedMessage,
+          },
+        ],
+        temperature: 0.4,
+        max_tokens: 700,
+      });
+
+      const response = getAiText(out);
+
+      if (response) {
+        return res.json({
+          success: true,
+          response,
+          source: 'deepseek-api',
+        });
+      }
+    } catch (e) {
+      console.error('reply deepseek error', e);
+    }
+
+    return res.json({
+      success: true,
+      response: 'I am having trouble reaching the AI service right now. Please try again in a moment.',
+      source: 'deepseek-fallback',
+    });
   } catch (err) {
-    res.json({ success: false, error: err.message });
+    return res.json({
+      success: false,
+      error: err.message,
+    });
   }
 });
 
-async function callOpenAIChat(payload) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    throw new Error('OPENAI_API_KEY missing');
-  }
+/* ---------------------------------------------
+   DIRECT DEEPSEEK
+--------------------------------------------- */
 
-  const data = JSON.stringify(payload);
-
-  const options = {
-    hostname: 'api.openai.com',
-    path: '/v1/chat/completions',
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Content-Length': Buffer.byteLength(data),
-      Authorization: `Bearer ${apiKey}`,
-    },
-  };
-
-  return new Promise((resolve, reject) => {
-    const req = https.request(options, (res) => {
-      let body = '';
-      res.on('data', (chunk) => (body += chunk));
-      res.on('end', () => {
-        try {
-          const json = JSON.parse(body);
-          if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-            resolve(json);
-          } else {
-            reject(new Error(json.error?.message || body || 'OpenAI error'));
-          }
-        } catch (e) {
-          reject(e);
-        }
-      });
-    });
-    req.on('error', reject);
-    req.write(data);
-    req.end();
-  });
-}
-
-async function callDeepseekChat(payload) {
-  // Prefer explicit DeepSeek key, but allow OPENAI_API_KEY as fallback
-  const apiKey = process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    throw new Error('DEEPSEEK_API_KEY or OPENAI_API_KEY missing');
-  }
-
-  const client = new OpenAI({
-    baseURL: 'https://api.deepseek.com',
-    apiKey,
-  });
-
-  const { model, messages, ...rest } = payload || {};
-
-  const completion = await client.chat.completions.create({
-    model: model || process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-    messages,
-    ...rest,
-  });
-
-  return completion;
-}
-
-// Generic Llama / OpenAI-compatible chat helper for pro posting tools
-async function callLlamaChat(payload) {
-  const apiKey = process.env.LLAMA_API_KEY;
-  const baseURL = process.env.LLAMA_API_BASE_URL;
-
-  if (!apiKey || !baseURL) {
-    throw new Error('LLAMA_API_KEY or LLAMA_API_BASE_URL missing');
-  }
-
-  const client = new OpenAI({
-    baseURL,
-    apiKey,
-  });
-
-  const { model, messages, ...rest } = payload || {};
-
-  const completion = await client.chat.completions.create({
-    model: model || process.env.LLAMA_MODEL || 'llama-3.1-8b-instruct',
-    messages,
-    temperature: typeof process.env.LLAMA_TEMPERATURE !== 'undefined'
-      ? Number(process.env.LLAMA_TEMPERATURE)
-      : 0.8,
-    max_tokens: typeof process.env.LLAMA_MAX_TOKENS !== 'undefined'
-      ? Number(process.env.LLAMA_MAX_TOKENS)
-      : 512,
-    ...rest,
-  });
-
-  return completion;
-}
-
-// Local DeepSeek GPT4All endpoint
 router.post('/deepseek', async (req, res) => {
   try {
     const { prompt = '' } = req.body || {};
-    const cleaned = (prompt || '').toString().trim();
+    const cleaned = normalizeUserPromptText(prompt);
+
     if (!cleaned) {
-      return res.status(400).json({ ok: false, error: 'Missing prompt' });
+      return res.status(400).json({
+        ok: false,
+        error: 'Missing prompt',
+      });
     }
 
-    try {
-      if (useLocalAi) {
-        const { askChat } = await import('../services/aiService.js');
-        const text = await askChat(cleaned);
-        return res.json({ ok: true, text, source: 'deepseek-local' });
-      } else {
-        // Cloud DeepSeek chat
-        const out = await callDeepseekChat({
-          model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-          messages: [
-            { role: 'user', content: cleaned },
-          ],
-        });
-        const text = out.choices?.[0]?.message?.content || '';
-        return res.json({ ok: true, text, source: 'deepseek-api' });
-      }
-    } catch (err) {
-      console.error('DeepSeek error', err);
-      return res.status(500).json({ ok: false, error: err.message || 'DeepSeek failed' });
+    if (isDatePrompt(cleaned)) {
+      return res.json({
+        ok: true,
+        text: buildDateAnswer(),
+        source: 'date-direct',
+      });
     }
+
+    const intent = detectWorkspaceIntent(cleaned, false, '');
+
+    const out = await callDeepseekChat({
+      messages: [
+        {
+          role: 'system',
+          content: buildGeneralSystemPrompt({
+            intent,
+            userText: cleaned,
+          }),
+        },
+        {
+          role: 'user',
+          content: cleaned,
+        },
+      ],
+    });
+
+    return res.json({
+      ok: true,
+      text: getAiText(out),
+      source: 'deepseek-api',
+    });
   } catch (err) {
     console.error('DeepSeek handler error', err);
-    return res.status(500).json({ ok: false, error: 'DeepSeek handler failed' });
+
+    return res.status(500).json({
+      ok: false,
+      error: err.message || 'DeepSeek failed',
+    });
   }
 });
 
-// Dev endpoints returning mock AI outputs
+/* ---------------------------------------------
+   DEV TOOLS
+--------------------------------------------- */
+
 router.post('/dev/post-enhancer', async (req, res) => {
   try {
     const { text = '' } = req.body || {};
-    const prompt = `You are an expert social media copywriter for the FaceMe platform. Rewrite this post to be clearer and more engaging while keeping the same core message and tone.
+
+    const prompt = `Rewrite this post to be clearer and more engaging while keeping the same core message and tone.
 
 Requirements:
-- Keep it relatively short and scannable.
+- Keep it short and scannable.
 - Make the first line a strong hook.
-- Add 2–4 relevant hashtags on the last line.
+- Add 2 to 4 relevant hashtags only if natural.
 - Return plain text only.
 
 Post:
-${text || 'Write a short, friendly post for my FaceMeX audience.'}`;
-    if (useLocalAi) {
-      try {
-        const { askChat } = await import('../services/aiService.js');
-        const out = await askChat(prompt);
-        const enhanced = (out || '').trim() || text;
-        return res.json({ ok: true, result: enhanced, source: 'deepseek-local' });
-      } catch (e) {
-        console.error('post-enhancer deepseek error', e);
-        // Soft fallback to simple local template
-        const enhanced = ` Optimized Post:\n${text.trim() || 'Your post'}\n\nHashtags: #FaceMeX #Create #Inspire`;
-        return res.json({ ok: true, result: enhanced, source: 'mock-fallback' });
-      }
-    }
-    // Cloud DeepSeek for pro Post Wizard
-    try {
-      const out = await callDeepseekChat({
-        model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-        messages: [{ role: 'user', content: prompt }],
-      });
-      const enhanced = (out.choices?.[0]?.message?.content || '').trim();
-      if (enhanced) {
-        return res.json({ ok: true, result: enhanced, source: 'deepseek-api' });
-      }
-    } catch (e) {
-      console.error('post-enhancer deepseek api error', e);
-    }
+${clean(text) || 'Write a short, friendly post for my FaceMeX audience.'}`;
 
-    const enhanced = ` Optimized Post:\n${text.trim() || 'Your post'}\n\nHashtags: #FaceMeX #Create #Inspire`;
-    return res.json({ ok: true, result: enhanced, source: 'mock' });
+    const out = await callDeepseekChat({
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.8,
+      max_tokens: 250,
+    });
+
+    return res.json({
+      ok: true,
+      result: getAiText(out),
+      source: 'deepseek-api',
+    });
   } catch (err) {
     console.error('post-enhancer error', err);
-    return res.status(500).json({ ok: false, error: 'Post enhancer failed' });
+
+    return res.status(500).json({
+      ok: false,
+      error: 'Post enhancer failed',
+    });
   }
 });
 
 router.post('/dev/caption-muse', async (req, res) => {
   try {
     const { topic = '' } = req.body || {};
-    const prompt = `You are a playful but professional caption generator for the FaceMeX platform.
 
-Generate 3 short, scroll-stopping social captions for:
-${topic || 'a moment on FaceMeX'}
+    const prompt = `Generate 3 short, scroll-stopping social captions for:
+${clean(topic) || 'a moment on FaceMeX'}
 
 Requirements:
-- Max 1–2 short sentences per caption.
-- Make them feel natural, not like ads.
-- Add 1–3 relevant hashtags in some captions.
-- Return plain text ONLY, one caption per line, no numbering, no JSON.`;
-    if (useLocalAi) {
-      try {
-        const { askChat } = await import('../services/aiService.js');
-        const out = await askChat(prompt);
-        const lines = (out || '')
-          .split(/\r?\n/)
-          .map((l) => l.replace(/^[-*\d.\s]+/, '').trim())
-          .filter(Boolean);
-        const captions = lines.slice(0, 3);
-        if (captions.length) {
-          return res.json({ ok: true, suggestions: captions, source: 'deepseek-local' });
-        }
-      } catch (e) {
-        console.error('caption-muse deepseek error', e);
-      }
-    }
-    // Cloud DeepSeek for Caption Muse
-    try {
-      const out = await callDeepseekChat({
-        model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-        messages: [{ role: 'user', content: prompt }],
-      });
-      const lines = (out.choices?.[0]?.message?.content || '')
-        .split(/\r?\n/)
-        .map((l) => l.replace(/^[-*\d.\s]+/, '').trim())
-        .filter(Boolean);
-      const captions = lines.slice(0, 3);
-      if (captions.length) {
-        return res.json({ ok: true, suggestions: captions, source: 'deepseek-api' });
-      }
-    } catch (e) {
-      console.error('caption-muse deepseek api error', e);
-    }
+- Max 1 to 2 short sentences per caption.
+- Make them natural, not like ads.
+- Add 1 to 3 relevant hashtags only if natural.
+- Return one caption per line.
+- No numbering.
+- No JSON.`;
 
-    const captions = [
-      ` ${topic || 'This moment'}, but make it unforgettable.`,
-      `Vibes set. ${topic || 'Let’s go.'} #FaceMeX`,
-      `Your daily spark: ${topic || 'creativity'} #Create #Inspire`,
-    ];
-    return res.json({ ok: true, suggestions: captions, source: 'mock' });
+    const out = await callDeepseekChat({
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.85,
+      max_tokens: 200,
+    });
+
+    const captions = getAiText(out)
+      .split(/\r?\n/)
+      .map((line) => line.replace(/^[-*\d.\s]+/, '').trim())
+      .filter(Boolean)
+      .slice(0, 3);
+
+    return res.json({
+      ok: true,
+      suggestions: captions,
+      source: 'deepseek-api',
+    });
   } catch (err) {
     console.error('caption-muse error', err);
-    return res.status(500).json({ ok: false, error: 'Caption Muse failed' });
+
+    return res.status(500).json({
+      ok: false,
+      error: 'Caption Muse failed',
+    });
   }
 });
 
 router.post('/dev/trend-finder', async (req, res) => {
   try {
     const { niche = 'general' } = req.body || {};
-    const prompt = `You are a trend analyst for creators on FaceMe.
 
-For the niche: "${niche}"
+    const prompt = `For the niche: "${clean(niche) || 'general'}"
 
-Give 5 trending hashtags with an estimated popularity score from 0–100.
+Give 5 trending hashtags with an estimated popularity score from 0 to 100.
 
 Format:
-1) #hashtag - score
-2) #hashtag - score
-...
+#hashtag - score
 
-Return plain text only, no JSON.`;
+Return plain text only.`;
 
-    // Try local AI first if enabled
-    if (useLocalAi) {
-      try {
-        const { askUtility } = await import('../services/aiService.js');
-        const out = await askUtility(prompt);
-        const lines = (out || '')
-          .split(/\r?\n/)
-          .map((l) => l.trim())
-          .filter(Boolean);
-        const trends = lines
-          .map((l) => l.replace(/^\d+[).\s]*/, ''))
-          .map((l) => {
-            const match = l.match(/(#\S+)\s*[-–]\s*(\d+)/);
-            if (!match) return null;
-            return { tag: match[1], score: Number(match[2]) };
-          })
-          .filter(Boolean)
-          .slice(0, 5);
-        if (trends.length) {
-          return res.json({ ok: true, niche, trends, source: 'deepseek-local' });
-        }
-      } catch (e) {
-        console.error('trend-finder local error', e);
-      }
-    }
+    const out = await callDeepseekChat({
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.7,
+      max_tokens: 200,
+    });
 
-    // Cloud DeepSeek for Trend Finder
-    try {
-      const out = await callDeepseekChat({
-        model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-        messages: [{ role: 'user', content: prompt }],
-      });
-      const lines = (out.choices?.[0]?.message?.content || '')
-        .split(/\r?\n/)
-        .map((l) => l.trim())
-        .filter(Boolean);
-      const trends = lines
-        .map((l) => l.replace(/^\d+[).\s]*/, ''))
-        .map((l) => {
-          const match = l.match(/(#\S+)\s*[-–]\s*(\d+)/);
-          if (!match) return null;
-          return { tag: match[1], score: Number(match[2]) };
-        })
-        .filter(Boolean)
-        .slice(0, 5);
-      if (trends.length) {
-        return res.json({ ok: true, niche, trends, source: 'deepseek-api' });
-      }
-    } catch (e) {
-      console.error('trend-finder deepseek api error', e);
-    }
+    const trends = getAiText(out)
+      .split(/\r?\n/)
+      .map((line) => line.trim().replace(/^\d+[).\s]*/, ''))
+      .map((line) => {
+        const match = line.match(/(#\S+)\s*[-–]\s*(\d+)/);
+        if (!match) return null;
 
-    const trends = [
-      { tag: '#AI', score: 96 },
-      { tag: '#Wellness', score: 88 },
-      { tag: '#LiveEvents', score: 83 },
-    ];
-    return res.json({ ok: true, niche, trends, source: 'mock' });
+        return {
+          tag: match[1],
+          score: Number(match[2]),
+        };
+      })
+      .filter(Boolean)
+      .slice(0, 5);
+
+    return res.json({
+      ok: true,
+      niche,
+      trends,
+      source: 'deepseek-api',
+    });
   } catch (err) {
     console.error('trend-finder error', err);
-    return res.status(500).json({ ok: false, error: 'Trend Finder failed' });
+
+    return res.status(500).json({
+      ok: false,
+      error: 'Trend Finder failed',
+    });
   }
 });
 
-// Creator+ Assistant: returns coaching tips and content ideas (mock)
 router.post('/dev/assistant', async (req, res) => {
   try {
-    const { goal = 'grow audience', audience = 'general', topic = 'content' } = req.body || {};
-    const prompt = `You are a concise creator and professional coach for the FaceMeX social platform.\nUser goal: ${goal}. Audience: ${audience}. Topic: ${topic}.\nGive 3 short coaching tips and 3 concrete content ideas.\nRespond as plain text with two sections:\nTips:\n- tip1\n- tip2\n- tip3\nIdeas:\n- idea1\n- idea2\n- idea3`;
+    const {
+      goal = 'grow audience',
+      audience = 'general',
+      topic = 'content',
+    } = req.body || {};
 
-    if (useLocalAi) {
-      try {
-        const { askChat } = await import('../services/aiService.js');
-        const out = await askChat(prompt);
-        const lines = (out || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-        const tips = [];
-        const ideas = [];
-        let mode = 'tips';
-        for (const l of lines) {
-          if (/^ideas\s*:/i.test(l)) { mode = 'ideas'; continue; }
-          if (/^tips\s*:/i.test(l)) { mode = 'tips'; continue; }
-          const clean = l.replace(/^[-*\d.\s]+/, '').trim();
-          if (!clean) continue;
-          if (mode === 'tips') tips.push(clean);
-          else ideas.push(clean);
-        }
-        return res.json({ ok: true, goal, audience, topic, tips: tips.slice(0, 3), ideas: ideas.slice(0, 3), source: 'deepseek-local' });
-      } catch (e) {
-        console.error('assistant deepseek local error', e);
-        // fall through to cloud/mocks
-      }
-    } else {
-      // Cloud Creator Assistant: use DeepSeek when available
-      try {
-        const out = await callDeepseekChat({
-          model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-          messages: [{ role: 'user', content: prompt }],
-        });
-        const lines = (out.choices?.[0]?.message?.content || '')
-          .split(/\r?\n/)
-          .map((l) => l.trim())
-          .filter(Boolean);
-        const tips = [];
-        const ideas = [];
-        let mode = 'tips';
-        for (const l of lines) {
-          if (/^ideas\s*:/i.test(l)) { mode = 'ideas'; continue; }
-          if (/^tips\s*:/i.test(l)) { mode = 'tips'; continue; }
-          const clean = l.replace(/^[-*\d.\s]+/, '').trim();
-          if (!clean) continue;
-          if (mode === 'tips') tips.push(clean);
-          else ideas.push(clean);
-        }
-        if (tips.length || ideas.length) {
-          return res.json({ ok: true, goal, audience, topic, tips: tips.slice(0, 3), ideas: ideas.slice(0, 3), source: 'deepseek-api' });
-        }
-      } catch (e) {
-        console.error('assistant deepseek cloud error', e);
-        // fall through to mock
-      }
-    }
+    const prompt = `User goal: ${goal}
+Audience: ${audience}
+Topic: ${topic}
 
-    // Fallback to simple mock data if local AI is not enabled or fails
-    const tips = [
-      `Keep ${topic} concise and value-packed for ${audience}.`,
-      `Use a clear hook in the first 2 seconds to boost retention.`,
-      `End with a question to spark comments and save/follow intent.`,
-    ];
-    const ideas = [
-      `A quick how-to about ${topic} with 3 actionable steps.`,
-      `Behind-the-scenes: your process for ${topic}.`,
-      `Myth-busting ${topic}: 3 things most people get wrong.`,
-    ];
-    return res.json({ ok: true, goal, audience, topic, tips, ideas, source: 'mock' });
+Give 3 short coaching tips and 3 concrete content ideas.
+
+Format:
+Tips:
+- tip
+- tip
+- tip
+
+Ideas:
+- idea
+- idea
+- idea
+
+Return plain text only.`;
+
+    const out = await callDeepseekChat({
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.75,
+      max_tokens: 300,
+    });
+
+    return res.json({
+      ok: true,
+      result: getAiText(out),
+      source: 'deepseek-api',
+    });
   } catch (err) {
     console.error('Assistant error', err);
-    return res.status(500).json({ ok: false, error: 'Assistant failed' });
+
+    return res.status(500).json({
+      ok: false,
+      error: 'Assistant failed',
+    });
   }
 });
 
-// Professional profile tools - AI CV Builder
+/* ---------------------------------------------
+   CV BUILDER
+--------------------------------------------- */
+
 router.post('/pro/resume-builder', async (req, res) => {
   try {
     const {
@@ -632,147 +2043,153 @@ router.post('/pro/resume-builder', async (req, res) => {
       phone = '',
       location = '',
       idNumber = '',
+      showIdOnCv = false,
       summary = '',
       experience = '',
       skills = '',
       education = '',
       extras = '',
-      tier = 'free',
-      creatorPlus,
     } = req.body || {};
 
-    const personal = `Name: ${fullName || '[Your Name]'}\nEmail: ${email || 'your.email@example.com'}\nPhone: ${phone || '+0 000 000 0000'}\nLocation: ${location || 'Your City, Country'}\nID: ${idNumber || '[ID / Profile ID]'}`;
-    const cvNotes = `Summary:\n${summary}\n\nExperience:\n${experience}\n\nSkills:\n${skills}\n\nEducation:\n${education}\n\nExtras:\n${extras}`;
+    const safeShowIdOnCv = toBoolean(showIdOnCv);
 
-    const prompt = `You are a professional CV writer for the FaceMeX platform. Using the structured details below, write a complete, start-to-finish CV in English.\n\nRequirements:\n- Start with a clean header that clearly shows the candidate name and contact details.\n- Include the ID as a reference field in the header or an "ID" line.\n- Include clear sections: PROFESSIONAL SUMMARY, EXPERIENCE, SKILLS, EDUCATION. Optionally add ADDITIONAL INFORMATION for extras.\n- Use bullet points for responsibilities and achievements under each role.\n- Make it ATS-friendly, concise, and easy to copy-paste.\n- If the input is very short or weak, gently expand with realistic but generic wording so the CV still feels complete.\n- Keep the CV length suitable for about 1–2 pages only (do not write more than roughly two pages of content).\n- Return plain text only (no markdown, no JSON).\n\nPERSONAL DETAILS:\n${personal}\n\nCANDIDATE NOTES:\n${cvNotes}`;
+    const fallbackCv = buildClassicA4CvTemplate({
+      fullName,
+      email,
+      phone,
+      location,
+      idNumber,
+      showIdOnCv: safeShowIdOnCv,
+      summary,
+      experience,
+      skills,
+      education,
+      extras,
+    });
 
-    if (useLocalAi) {
-      try {
-        const { askChat } = await import('../services/aiService.js');
-        const out = await askChat(prompt);
-        let cvText = (out || '').trim();
+    const prompt = `Create a clean one-page A4 CV using this exact classic ATS template style:
 
-        // If DeepSeek returns nothing or a very short answer, fall back to a full template
-        if (!cvText || cvText.length < 400) {
-          cvText = `NAME\n${fullName || '[Your Name]'}\n\nCONTACT\nEmail: ${email || 'your.email@example.com'}\nPhone: ${phone || '+0 000 000 0000'}\nLocation: ${location || 'Your City, Country'}\nID: ${idNumber || '[ID / Profile ID]'}\n\nPROFESSIONAL SUMMARY\n${
-            summary ||
-            'Add a short 3–4 line summary about your background, strengths, achievements, and career goals.'
-          }\n\nEXPERIENCE\n${
-            experience ||
-            '- Role Title | Company | Dates\n  • Add 3–5 bullet points describing your impact and achievements.\n- Role Title | Company | Dates\n  • Add more roles and projects that show your value.'
-          }\n\nSKILLS\n${
-            skills ||
-            'List 6–10 core skills that match your ideal roles, separated by commas (e.g. React, UX Design, Team Leadership).'
-          }\n\nEDUCATION\n${
-            education ||
-            '- School or Program Name | Degree or Certificate | Dates\n  • Add your most relevant education, bootcamps, or certifications.'
-          }\n\nADDITIONAL INFORMATION\n${
-            extras ||
-            '- Add languages, volunteer work, awards, side projects, or links that support your profile.'
-          }`;
-        }
+FULL NAME IN CAPITAL LETTERS
+Address: [Location] | Contact: [Phone] | Email: [Email]
 
-        return res.json({ ok: true, resumeText: cvText, source: 'deepseek-local' });
-      } catch (e) {
-        console.error('resume-builder deepseek error', e);
-      }
-    } else {
-      try {
-        const out = await callDeepseekChat({
-          model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-          messages: [
-            { role: 'user', content: prompt },
-          ],
-        });
-        let cvText = (out.choices?.[0]?.message?.content || '').trim();
+PROFESSIONAL SUMMARY
+Short professional paragraph.
 
-        // If DeepSeek returns nothing or a very short answer, fall back to a full template
-        if (!cvText || cvText.length < 400) {
-          cvText = `NAME\n${fullName || '[Your Name]'}\n\nCONTACT\nEmail: ${email || 'your.email@example.com'}\nPhone: ${phone || '+0 000 000 0000'}\nLocation: ${location || 'Your City, Country'}\nID: ${idNumber || '[ID / Profile ID]'}\n\nPROFESSIONAL SUMMARY\n${
-            summary ||
-            'Add a short 3–4 line summary about your background, strengths, achievements, and career goals.'
-          }\n\nEXPERIENCE\n${
-            experience ||
-            '- Role Title | Company | Dates\n  • Add 3–5 bullet points describing your impact and achievements.\n- Role Title | Company | Dates\n  • Add more roles and projects that show your value.'
-          }\n\nSKILLS\n${
-            skills ||
-            'List 6–10 core skills that match your ideal roles, separated by commas (e.g. React, UX Design, Team Leadership).'
-          }\n\nEDUCATION\n${
-            education ||
-            '- School or Program Name | Degree or Certificate | Dates\n  • Add your most relevant education, bootcamps, or certifications.'
-          }\n\nADDITIONAL INFORMATION\n${
-            extras ||
-            '- Add languages, volunteer work, awards, side projects, or links that support your profile.'
-          }`;
-        }
+CORE COMPETENCIES
+- Skill
+- Skill
+- Skill
+- Skill
+- Skill
 
-        return res.json({ ok: true, resumeText: cvText, source: 'deepseek-api' });
-      } catch (e) {
-        console.error('resume-builder deepseek api error', e);
-      }
-    }
-
-    const resumeText = `NAME
-${fullName || '[Your Name]'}
-
-CONTACT DETAILS
-Email: ${email || 'your.email@example.com'}
-Phone: ${phone || '+0 000 000 0000'}
-Location: ${location || 'Your City, Country'}
-ID / PROFILE: ${idNumber || '[ID / Profile ID]'}
-
-PROFILE / SUMMARY
-${
-    summary ||
-    'Motivated candidate looking to grow in a professional environment. Highlight 3–4 lines about your strengths, tools you use, and the kind of roles you want (for example: junior developer, marketing assistant, creator, customer support, etc.).'
-  }
-
-KEY SKILLS
-${
-    skills ||
-    'List 6–10 skills that fit the jobs you want, separated by commas. For example: Communication, Customer Service, MS Office, Social Media, Problem Solving, Time Management.'
-  }
-
-EXPERIENCE
-${
-    experience ||
-    'Role Title | Company Name | City | 2022 – Present\n' +
-    '• Support daily tasks for the team and make sure work is delivered on time.\n' +
-    '• Communicate with customers or stakeholders in a friendly and professional way.\n' +
-    '• Learn new tools quickly and help improve small processes.\n\n' +
-    'Role Title | Company Name | City | 2020 – 2022\n' +
-    '• Assisted senior team members with projects and reports.\n' +
-    '• Worked with basic tools (e.g. email, spreadsheets, social media) to complete tasks.\n' +
-    '• Showed reliability by arriving on time and completing assigned work.'
-  }
+PROFESSIONAL EXPERIENCE
+Job Title | Company | Year
+- Responsibility or achievement
+- Responsibility or achievement
+- Responsibility or achievement
 
 EDUCATION
-${
-    education ||
-    'School or Program Name | City | Year Completed\n' +
-    '• Briefly mention your highest level of education, key subjects, or any short courses or bootcamps you have done.'
-  }
+Qualification | Institution | Year
 
-ADDITIONAL INFORMATION
-${
-    extras ||
-    'Languages: list any languages you speak.\n' +
-    'Projects / Volunteering: mention small projects, side hustles, or community work.\n' +
-    'Links: add links to online profiles or portfolios if you have them.'
-  }
+TECHNICAL SKILLS
+- Skill
+- Skill
+- Skill
 
-TIP
-This is a strong starter CV. For a more advanced, recruiter-style rewrite with sharper wording, you can upgrade using the AI CV Upgrade (Creator+) tool in FaceMeX.`;
-    return res.json({ ok: true, resumeText, source: 'mock' });
+LANGUAGES
+- Language: Level
+- Language: Level
+
+REFERENCES
+Available Upon Request
+
+Rules:
+- One A4 page only.
+- Plain text only.
+- No markdown.
+- No tables.
+- Rewrite weak input professionally.
+- Do not invent fake degrees, companies, licences, or job titles.
+- Do not include sensitive ID unless Show Profile ID on CV is Yes.
+
+Candidate details:
+Full name: ${clean(fullName) || '[Your Name]'}
+Email: ${clean(email) || 'your.email@example.com'}
+Phone: ${clean(phone) || '+27 00 000 0000'}
+Location: ${clean(location) || 'Your City, South Africa'}
+Show Profile ID on CV: ${safeShowIdOnCv ? 'Yes' : 'No'}
+Profile ID: ${safeShowIdOnCv ? clean(idNumber) || '[optional]' : '[do not include]'}
+
+Professional Summary:
+${clean(summary) || '[not provided]'}
+
+Core Competencies / Skills:
+${clean(skills) || '[not provided]'}
+
+Professional Experience:
+${clean(experience) || '[not provided]'}
+
+Education:
+${clean(education) || '[not provided]'}
+
+Additional Info:
+${clean(extras) || '[not provided]'}`;
+
+    try {
+      const out = await callDeepseekChat({
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You are an expert South African CV writer. Return only a clean one-page A4 CV using the requested classic ATS template.',
+          },
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+        temperature: 0.25,
+        max_tokens: 900,
+      });
+
+      const resumeText = stripMarkdownSymbols(getAiText(out));
+
+      if (resumeText && resumeText.length > 250 && resumeText.includes('PROFESSIONAL SUMMARY')) {
+        return res.json({
+          ok: true,
+          resumeText,
+          pageSize: 'A4',
+          layout: 'classic-ats-one-page',
+          template: 'six-second-cv',
+          source: 'deepseek-api',
+        });
+      }
+    } catch (e) {
+      console.error('resume-builder deepseek error', e);
+    }
+
+    return res.json({
+      ok: true,
+      resumeText: fallbackCv,
+      pageSize: 'A4',
+      layout: 'classic-ats-one-page',
+      template: 'six-second-cv',
+      source: 'template-fallback',
+    });
   } catch (err) {
     console.error('resume-builder error', err);
-    // Final safety net: never break the client, always return a usable CV
-    const fallback = `NAME\n[Your Name]\n\nCONTACT\nEmail: your.email@example.com\nPhone: +0 000 000 0000\nLocation: Your City, Country\nID: [ID / Profile ID]\n\nPROFESSIONAL SUMMARY\nAdd a short 3–4 line summary about your background, strengths, achievements, and career goals.\n\nEXPERIENCE\n- Role Title | Company | Dates\n  • Add 3–5 bullet points describing your impact and achievements.\n- Role Title | Company | Dates\n  • Add more roles and projects that show your value.\n\nSKILLS\nList 6–10 core skills that match your ideal roles, separated by commas (e.g. React, UX Design, Team Leadership).\n\nEDUCATION\n- School or Program Name | Degree or Certificate | Dates\n  • Add your most relevant education, bootcamps, or certifications.\n\nADDITIONAL INFORMATION\n- Add languages, volunteer work, awards, side projects, or links that support your profile.`;
-    return res.json({ ok: true, resumeText: fallback, source: 'error-fallback' });
+
+    return res.json({
+      ok: true,
+      resumeText: buildClassicA4CvTemplate({}),
+      pageSize: 'A4',
+      layout: 'classic-ats-one-page',
+      template: 'six-second-cv',
+      source: 'error-fallback',
+    });
   }
 });
 
-// Professional profile tools - AI CV Improver (for Creator+ tiers)
 router.post('/pro/resume-improver', async (req, res) => {
   try {
     const {
@@ -783,81 +2200,69 @@ router.post('/pro/resume-improver', async (req, res) => {
       creatorPlus,
     } = req.body || {};
 
-    const baseCv = (existingCv || '').toString().trim();
+    const baseCv = clean(existingCv);
 
     if (!baseCv) {
-      return res.status(400).json({ ok: false, error: 'Provide your current CV text first.' });
+      return res.status(400).json({
+        ok: false,
+        error: 'Provide your current CV text first.',
+      });
     }
 
-    const level = (targetLevel || 'professional').toString();
-    const notes = (extras || '').toString();
+    const canUseAi = isCreatorTier(tier, creatorPlus);
 
-    const isCreatorPlus = String(tier || '').toLowerCase() === 'creator+' || creatorPlus === true || String(tier || '').toLowerCase() === 'business';
+    if (!canUseAi) {
+      return res.json({
+        ok: true,
+        improvedText: baseCv,
+        source: 'free-template',
+      });
+    }
 
-    const prompt = `You are a senior CV and career coach helping creators and professionals on the FaceMeX platform.
-The user pasted their CURRENT CV below. Your job is to REWRITE it into a stronger, modern CV suitable for a ${level} role.
+    const prompt = `Rewrite this CV into a stronger one-page A4 CV using classic ATS structure.
 
-Requirements:
-- Keep all true facts but rewrite language to be confident and outcome-focused.
-- Improve structure and clarity but keep it easy to copy-paste into job portals.
-- Use clear section headings (for example: PROFESSIONAL SUMMARY, EXPERIENCE, SKILLS, EDUCATION, ADDITIONAL INFORMATION if needed).
-- Use bullet points under roles that highlight measurable impact where possible.
-- If the CV is very short or weak, gently expand it with realistic, generic but helpful phrasing so it still feels believable.
-- Keep the final CV length suitable for about 1–2 pages only (do not write more than roughly two pages of content).
-- Return plain text only (no markdown, no JSON).
+Target level:
+${targetLevel || 'professional'}
 
-Extra guidance from user (optional):
-${notes || '[none]'}
+Extra notes:
+${extras || '[none]'}
 
-CURRENT CV:
+Current CV:
 ${baseCv}`;
 
-    // Free tiers: do not call DeepSeek, return guided draft
-    if (!isCreatorPlus) {
-      const improvedText = `IMPROVED CV DRAFT\n\nThis is an upgraded version of your CV. It keeps your original information but uses clearer structure and stronger wording.\n\n${baseCv}\n\nNEXT STEPS\n- Add more detail to roles where impact is not clear.\n- Make sure dates, job titles, and tools are accurate.\n- Tailor this CV to each job description by adjusting the summary and top skills.`;
-      return res.json({ ok: true, improvedText, source: 'free-template' });
-    }
+    const out = await callDeepseekChat({
+      messages: [
+        {
+          role: 'system',
+          content:
+            'You are an expert CV improver. Return only a clean one-page A4 CV.',
+        },
+        {
+          role: 'user',
+          content: prompt,
+        },
+      ],
+      temperature: 0.25,
+      max_tokens: 900,
+    });
 
-    if (useLocalAi) {
-      try {
-        const { askChat } = await import('../services/aiService.js');
-        const out = await askChat(prompt);
-        let improved = (out || '').trim();
-
-        if (!improved || improved.length < 400) {
-          improved = `IMPROVED CV DRAFT\n\nThis is an upgraded version of your CV. It keeps your original information but uses clearer structure and stronger wording.\n\n${baseCv}\n\nNEXT STEPS\n- Add more detail to roles where impact is not clear.\n- Make sure dates, job titles, and tools are accurate.\n- Tailor this CV to each job description by adjusting the summary and top skills.`;
-        }
-
-        return res.json({ ok: true, improvedText: improved, source: 'deepseek-local' });
-      } catch (e) {
-        console.error('resume-improver deepseek error', e);
-      }
-    } else {
-      try {
-        const out = await callDeepseekChat({
-          model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-          messages: [
-            { role: 'user', content: prompt },
-          ],
-        });
-        let improved = (out.choices?.[0]?.message?.content || '').trim();
-
-        if (!improved || improved.length < 400) {
-          improved = `IMPROVED CV DRAFT\n\nThis is an upgraded version of your CV. It keeps your original information but uses clearer structure and stronger wording.\n\n${baseCv}\n\nNEXT STEPS\n- Add more detail to roles where impact is not clear.\n- Make sure dates, job titles, and tools are accurate.\n- Tailor this CV to each job description by adjusting the summary and top skills.`;
-        }
-
-        return res.json({ ok: true, improvedText: improved, source: 'deepseek-api' });
-      } catch (e) {
-        console.error('resume-improver deepseek api error', e);
-      }
-    }
-
-    const improvedText = `IMPROVED CV DRAFT\n\nThis is an upgraded version of your CV. It keeps your original information but uses clearer structure and stronger wording.\n\n${baseCv}\n\nNEXT STEPS\n- Add more detail to roles where impact is not clear.\n- Make sure dates, job titles, and tools are accurate.\n- Tailor this CV to each job description by adjusting the summary and top skills.`;
-    return res.json({ ok: true, improvedText, source: useLocalAi ? 'mock-fallback' : 'mock' });
+    return res.json({
+      ok: true,
+      improvedText: stripMarkdownSymbols(getAiText(out)),
+      pageSize: 'A4',
+      layout: 'classic-ats-one-page',
+      template: 'six-second-cv',
+      source: 'deepseek-api',
+    });
   } catch (err) {
     console.error('resume-improver error', err);
-    const fallback = 'IMPROVED CV DRAFT\n\nPaste your current CV again and add more detail about your roles, achievements, tools, and education. Focus each bullet on what you delivered, not only what you were responsible for.';
-    return res.json({ ok: true, improvedText: fallback, source: 'error-fallback' });
+
+    return res.json({
+      ok: true,
+      improvedText:
+        'Paste your current CV again and include your job target, experience, skills, education, languages, and additional information.',
+      source: 'error-fallback',
+    });
   }
 });
 
@@ -873,244 +2278,139 @@ router.post('/pro/cover-letter', async (req, res) => {
       creatorPlus,
     } = req.body || {};
 
-    console.log('cover-letter body', req.body);
-
-    const isCreatorPlus = String(tier || '').toLowerCase() === 'creator+' || creatorPlus === true;
     const nameLine = candidateName || '[Your Name]';
-    const baseLetter = `Dear Hiring Manager,\n\nI am excited to apply for the ${jobTitle || 'role'} at ${
-      company || 'your company'
-    }. I believe my background and skills make me a strong fit for this opportunity.\n\n${
-      resumeSummary ||
-      'In this paragraph, briefly describe 2–3 of your strongest experiences or achievements that match the role. Mention tools, industries, or results where possible.'
-    }\n\n${
-      extras ||
-      'You can also mention cultural fit, motivation to join the company, or how this role connects to your long‑term goals.'
-    }\n\nThank you for considering my application. I would welcome the chance to discuss how I can contribute to your team.\n\nSincerely,\n${nameLine}`;
 
-    // Free tier: always return template, never call AI
-    if (!isCreatorPlus) {
-      const finalLetter = baseLetter.replace('[Your Name]', nameLine);
-      return res.json({ ok: true, letter: finalLetter, source: 'free-template' });
+    const baseLetter = `Dear Hiring Manager,
+
+I am excited to apply for the ${jobTitle || 'role'} at ${company || 'your company'}. I believe my background, skills, and willingness to learn make me a strong fit for this opportunity.
+
+${resumeSummary || 'I bring a strong work ethic, good communication skills, and a commitment to completing tasks professionally.'}
+
+${extras || 'I am interested in this role because it matches my career goals and gives me an opportunity to grow while adding value to the company.'}
+
+Thank you for considering my application. I would welcome the opportunity to discuss how I can contribute to your team.
+
+Sincerely,
+${nameLine}`;
+
+    const canUseAi = isCreatorTier(tier, creatorPlus);
+
+    if (!canUseAi) {
+      return res.json({
+        ok: true,
+        letter: baseLetter,
+        source: 'free-template',
+      });
     }
 
-    // Creator+ with local or cloud AI
-    try {
-      const prompt = `You are a professional cover letter writer helping creators and professionals on the FaceMe platform.\nWrite a concise, 3–5 paragraph cover letter in English for the role "${
-        jobTitle || 'a relevant role'
-      }" at "${company || 'the company'}".\n\nUse this candidate summary and notes as the base:\n${
-        resumeSummary || '[No summary provided, infer a reasonable but generic summary from context.]'
-      }\n\nExtra notes from candidate (optional):\n${extras || '[none]'}\n\nRequirements:\n- Keep it friendly but professional.\n- Focus on specific strengths and outcomes, not just responsibilities.\n- Make it easy to copy-paste into job portals.\n- Keep the length suitable for a single A4 page.\n- Return only the letter text, no markdown, no JSON.`;
+    const prompt = `Write a concise professional cover letter.
 
-      let letter = '';
-      if (useLocalAi) {
-        const { askChat } = await import('../services/aiService.js');
-        const out = await askChat(prompt);
-        letter = (out || '').trim();
-        if (letter) {
-          return res.json({ ok: true, letter, source: 'deepseek-local-creator+' });
-        }
-      } else {
-        // Cloud: prefer Llama, fall back to DeepSeek
-        try {
-          const out = await callLlamaChat({
-            messages: [{ role: 'user', content: prompt }],
-          });
-          letter = (out.choices?.[0]?.message?.content || '').trim();
-          if (letter) {
-            return res.json({ ok: true, letter, source: 'llama-api-creator+' });
-          }
-        } catch (e) {
-          console.error('cover-letter llama error', e);
-        }
+Job title: ${jobTitle || 'role'}
+Company: ${company || 'company'}
+Candidate name: ${candidateName || '[Your Name]'}
+Candidate summary:
+${resumeSummary || '[not provided]'}
 
-        const out = await callDeepseekChat({
-          model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-          messages: [
-            { role: 'user', content: prompt },
-          ],
-        });
-        letter = (out.choices?.[0]?.message?.content || '').trim();
-        if (letter) {
-          return res.json({ ok: true, letter, source: 'deepseek-api-creator+' });
-        }
-      }
-    } catch (e) {
-      console.error('cover-letter deepseek/llama error', e);
-    }
+Extra notes:
+${extras || '[none]'}
 
-    // Fallback for Creator+ if AI fails or returns nothing
-    return res.json({ ok: true, letter: baseLetter, source: 'creator-template-fallback' });
+Rules:
+- 3 to 5 short paragraphs.
+- Professional but warm.
+- Plain text only.
+- Easy to copy and paste.
+- Do not invent fake experience.`;
+
+    const out = await callDeepseekChat({
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.45,
+      max_tokens: 650,
+    });
+
+    return res.json({
+      ok: true,
+      letter: stripMarkdownSymbols(getAiText(out)) || baseLetter,
+      source: 'deepseek-api',
+    });
   } catch (err) {
     console.error('cover-letter error', err);
-    // Final safety net: always return a usable letter instead of failing
-    const letter = `Dear Hiring Manager,\n\nThank you for reviewing my application. I am very interested in this opportunity and believe my skills and experience could be a strong match.\n\nI look forward to the possibility of discussing how I can contribute to your team.\n\nSincerely,\n${candidateName || '[Your Name]'}`;
-    return res.json({ ok: true, letter, source: 'error-fallback' });
+
+    return res.json({
+      ok: true,
+      letter: `Dear Hiring Manager,
+
+Thank you for reviewing my application. I am interested in this opportunity and believe my skills and attitude could be a strong match.
+
+I look forward to the possibility of discussing how I can contribute to your team.
+
+Sincerely,
+[Your Name]`,
+      source: 'error-fallback',
+    });
   }
 });
 
-// Advanced job assistant - structured strategies
-router.post('/pro/job-assistant', async (req, res) => {
-  try {
-    const {
-      role = '',
-      location = '',
-      preferences = '',
-      experienceLevel = '',
-      industry = '',
-      workMode = '',
-      hoursPerWeek = '',
-      tier = 'free',
-      creatorPlus,
-    } = req.body || {};
+/* ---------------------------------------------
+   WORKSPACE ROUTES
+--------------------------------------------- */
 
-    const isCreatorPlus =
-      String(tier || '').toLowerCase() === 'creator+' ||
-      creatorPlus === true ||
-      ['creator', 'business', 'exclusive'].includes(String(tier || '').toLowerCase());
+router.post('/pro/job-assistant', handleCareerWorkspace);
+router.post('/job-assistant', handleCareerWorkspace);
+router.post('/workspace', handleCareerWorkspace);
+router.post('/career-workspace', handleCareerWorkspace);
+router.post('/ask', handleCareerWorkspace);
+router.post('/chat', handleCareerWorkspace);
 
-    const prompt = `You are a practical job search coach helping a user on the FaceMeX platform. Give advanced, realistic advice.
-
-User context:
-- Target role: ${role || 'open to roles'}
-- Experience level: ${experienceLevel || 'not specified'}
-- Industry: ${industry || 'any'}
-- Preferred location: ${location || 'remote or flexible'}
-- Work mode: ${workMode || 'any (remote/hybrid/on-site)'}
-- Weekly time available for job search (hours): ${hoursPerWeek || 'not specified'}
-- Extra preferences: ${preferences || 'not specified'}
-
-Return 5 numbered strategies. Each item must focus on ONE of these areas (in order):
-1) Role focus & target job titles (which roles and where to search).
-2) CV / profile improvements (CV, FaceMeX, LinkedIn or portfolio).
-3) Application strategy (how many applications, how to tailor, which platforms).
-4) Networking & outreach (who to contact and how).
-5) Weekly routine based on their available hours (a simple schedule with concrete actions).
-
-Format:
-- Respond as plain text.
-- Use a numbered list from 1. to 5.
-- Each item should be 2–4 sentences with concrete, actionable steps.
-- Do NOT output any markdown or JSON.`;
-
-    // Free tiers: return template suggestions only, no DeepSeek calls
-    if (!isCreatorPlus) {
-      const baseRole = role || 'relevant roles';
-      const baseLocation = location || 'your preferred regions';
-      const level = experienceLevel || 'your current level';
-      const sector = industry || 'your chosen industry or nearby areas';
-      const mode = workMode || 'remote or on-site roles';
-      const hours = hoursPerWeek || '5–8';
-
-      const suggestions = [
-        `Clarify your target path by writing down 2–3 job titles that fit ${level} in ${sector} (for example: ${baseRole}). Use those exact titles when searching on major job boards in ${baseLocation}, and save alerts for each so new roles land in your inbox automatically.`,
-        'Upgrade your CV and online profiles by matching the top 5–8 skills and responsibilities that keep appearing in job descriptions. Make sure your headline, summary, and first bullets clearly show tools, results, and industries that match those roles.',
-        `Decide on a realistic application target (for example 5–10 focused applications per week). Prioritize roles that match at least 70% of your skills, and always tweak the first paragraph of your CV summary or cover letter to mirror the main requirements of each posting.`,
-        'Build a short outreach list: previous colleagues, classmates, and people working in teams or companies you like. Send friendly, specific messages asking for quick advice or a 10–15 minute chat instead of directly asking for a job, and share a short summary of the roles you are exploring.',
-        `Design a simple weekly routine for about ${hours} hours: 1) review and save promising roles, 2) send tailored applications, 3) do 2–3 outreach messages, and 4) spend at least 30 minutes improving your CV or profile. Repeat this cycle every week and track progress in a simple notes app or spreadsheet.`,
-      ];
-      return res.json({ ok: true, suggestions, source: 'free-template' });
-    }
-
-    if (useLocalAi) {
-      try {
-        const { askUtility } = await import('../services/aiService.js');
-        const out = await askUtility(prompt);
-        const lines = (out || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-        const numbered = lines.filter((l) => /^\d+\./.test(l)).slice(0, 5);
-        const cleaned = numbered.length
-          ? numbered.map((l) => l.replace(/^\d+\.\s*/, '').trim())
-          : lines.slice(0, 5);
-        if (cleaned.length) {
-          return res.json({ ok: true, suggestions: cleaned, source: 'deepseek-local' });
-        }
-      } catch (e) {
-        console.error('job-assistant deepseek error', e);
-      }
-    } else {
-      try {
-        const out = await callDeepseekChat({
-          model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-          messages: [
-            { role: 'user', content: prompt },
-          ],
-        });
-        const lines = (out.choices?.[0]?.message?.content || '')
-          .split(/\r?\n/)
-          .map((l) => l.trim())
-          .filter(Boolean);
-        const numbered = lines.filter((l) => /^\d+\./.test(l)).slice(0, 5);
-        const cleaned = numbered.length
-          ? numbered.map((l) => l.replace(/^\d+\.\s*/, '').trim())
-          : lines.slice(0, 5);
-        if (cleaned.length) {
-          return res.json({ ok: true, suggestions: cleaned, source: 'deepseek-api' });
-        }
-      } catch (e) {
-        console.error('job-assistant deepseek api error', e);
-      }
-    }
-
-    const baseRole = role || 'relevant roles';
-    const baseLocation = location || 'your preferred regions';
-    const level = experienceLevel || 'your current level';
-    const sector = industry || 'your chosen industry or nearby areas';
-    const mode = workMode || 'remote or on-site roles';
-    const hours = hoursPerWeek || '5–8';
-
-    const suggestions = [
-      `Clarify your target path by writing down 2–3 job titles that fit ${level} in ${sector} (for example: ${baseRole}). Use those exact titles when searching on major job boards in ${baseLocation}, and save alerts for each so new roles land in your inbox automatically.`,
-      'Upgrade your CV and online profiles by matching the top 5–8 skills and responsibilities that keep appearing in job descriptions. Make sure your headline, summary, and first bullets clearly show tools, results, and industries that match those roles.',
-      `Decide on a realistic application target (for example 5–10 focused applications per week). Prioritize roles that match at least 70% of your skills, and always tweak the first paragraph of your CV summary or cover letter to mirror the main requirements of each posting.`,
-      'Build a short outreach list: previous colleagues, classmates, and people working in teams or companies you like. Send friendly, specific messages asking for quick advice or a 10–15 minute chat instead of directly asking for a job, and share a short summary of the roles you are exploring.',
-      `Design a simple weekly routine for about ${hours} hours: 1) review and save promising roles, 2) send tailored applications, 3) do 2–3 outreach messages, and 4) spend at least 30 minutes improving your CV or profile. Repeat this cycle every week and track progress in a simple notes app or spreadsheet.`,
-    ];
-    return res.json({ ok: true, suggestions, source: useLocalAi ? 'mock-fallback' : 'mock' });
-  } catch (err) {
-    console.error('job-assistant error', err);
-    const suggestions = [
-      'Write down 2–3 job titles that fit the kind of work you want and use those exact titles when searching on job boards.',
-      'Review a few job descriptions and update your CV headline and top bullets so they mention the same skills and tools.',
-      'Set a weekly target for how many focused applications you will send, and track them in a simple list so you can follow up.',
-      'Each week, message a few people in your network or industry to ask for advice, feedback, or pointers to opportunities.',
-      'Block specific time slots in your calendar for job search tasks so it becomes a repeatable routine instead of random effort.',
-    ];
-    return res.json({ ok: true, suggestions, source: 'error-fallback' });
-  }
-});
+/* ---------------------------------------------
+   TRANSLATE
+--------------------------------------------- */
 
 router.post('/translate', async (req, res) => {
   try {
-    const { text = '', targetLang = 'en', sourceLang } = req.body || {};
-    if (!text || typeof text !== 'string') {
-      return res.status(400).json({ ok: false, error: 'Missing text' });
-    }
-    const prompt = `You are a translation engine. Translate the text into the requested target language. Preserve meaning and tone.\nReturn ONLY the translated text, no extra words.\nSource: ${sourceLang || 'auto'}\nTarget: ${targetLang}\nText:\n${text}`;
-    try {
-      if (useLocalAi) {
-        const { askUtility } = await import('../services/aiService.js');
-        console.log('[AI] translate -> local utility');
-        const out = await askUtility(prompt);
-        const translated = (out || '').trim();
-        return res.json({ ok: true, translated: translated || text, source: 'local-utility' });
-      }
+    const {
+      text = '',
+      targetLang = 'en',
+      sourceLang = 'auto',
+    } = req.body || {};
 
-      // DeepSeek cloud translation when local AI is disabled
-      const out = await callDeepseekChat({
-        model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-        messages: [
-          { role: 'user', content: prompt },
-        ],
+    if (!text || typeof text !== 'string') {
+      return res.status(400).json({
+        ok: false,
+        error: 'Missing text',
       });
-      const translated = (out.choices?.[0]?.message?.content || '').trim();
-      return res.json({ ok: true, translated: translated || text, source: 'deepseek-api' });
-    } catch (e) {
-      console.error('translate error', e);
-      return res.json({ ok: true, translated: text, source: 'fallback' });
     }
+
+    const prompt = `Translate the text into the requested target language.
+
+Rules:
+- Preserve meaning and tone.
+- Return only the translated text.
+
+Source language: ${sourceLang}
+Target language: ${targetLang}
+
+Text:
+${text}`;
+
+    const out = await callDeepseekChat({
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.2,
+      max_tokens: 700,
+    });
+
+    return res.json({
+      ok: true,
+      translated: getAiText(out) || text,
+      source: 'deepseek-api',
+    });
   } catch (err) {
     console.error('AI translate error', err);
-    // Final fallback to avoid breaking the client
-    return res.json({ ok: true, translated: text, source: 'fallback-error' });
+
+    return res.json({
+      ok: true,
+      translated: req.body?.text || '',
+      source: 'fallback-error',
+    });
   }
 });
 
