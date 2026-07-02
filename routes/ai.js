@@ -102,15 +102,12 @@ async function callDeepseekChat(payload) {
     process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY;
 
   if (!apiKey) {
-    throw new Error(
-      'DEEPSEEK_API_KEY or OPENAI_API_KEY missing'
-    );
+    throw new Error('DEEPSEEK_API_KEY or OPENAI_API_KEY missing');
   }
 
   const client = new OpenAI({
     baseURL:
-      process.env.DEEPSEEK_BASE_URL ||
-      'https://api.deepseek.com',
+      process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
     apiKey,
   });
 
