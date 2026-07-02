@@ -111,26 +111,20 @@ async function callDeepseekChat(payload) {
 
   const { model, messages, ...rest } = payload || {};
 
-  return client.chat.completions.create({
-    model: model || process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-    messages,
-    temperature: 0.35,
-    max_tokens: 1600,
-    ...rest,
-  });
-}
+const response = await client.chat.completions.create({
+  model: model || process.env.DEEPSEEK_MODEL || 'deepseek-chat',
+  messages,
+  temperature: 0.35,
+  max_tokens: 1600,
+  ...rest,
+});
 
-async function callVisionChat({ userPrompt, images, postContext = '' }) {
-  const apiKey = process.env.OPENAI_VISION_API_KEY || process.env.OPENAI_API_KEY;
+console.log('========== DEEPSEEK RESPONSE ==========');
+console.dir(response, { depth: null });
+console.log('=======================================');
 
-  if (!apiKey) {
-    return {
-      ok: false,
-      text:
-        'I received the image, but image analysis is not configured yet. Add OPENAI_API_KEY to the backend .env file and set OPENAI_VISION_MODEL=gpt-4o-mini.',
-    };
-  }
-
+return response;
+   
   const client = new OpenAI({
     apiKey,
     baseURL:
