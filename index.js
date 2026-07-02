@@ -54,7 +54,7 @@ const app = express();
 const allowedOrigins = [
   'https://facemexsocial.com',
   'https://www.facemexsocial.com',
-  'https://privatebeta4.netlify.app',
+  'https://privatebeta8.netlify.app',
   'http://localhost:5173',
   process.env.CLIENT_ORIGIN,
   process.env.FRONTEND_URL,
