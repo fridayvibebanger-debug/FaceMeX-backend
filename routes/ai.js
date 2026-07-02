@@ -3,6 +3,8 @@ import OpenAI from 'openai';
 
 const router = Router();
 
+const useLocalAi = false;
+
 /* ---------------------------------------------
    BASIC HELPERS
 --------------------------------------------- */
@@ -98,39 +100,69 @@ function normalizeUserPromptText(text = '') {
 --------------------------------------------- */
 
 async function callDeepseekChat(payload) {
-  const apiKey =
-    process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY;
+  const apiKey = process.env.DEEPSEEK_API_KEY;
 
   if (!apiKey) {
-    throw new Error('DEEPSEEK_API_KEY or OPENAI_API_KEY missing');
+    throw new Error('DEEPSEEK_API_KEY missing');
   }
 
   const client = new OpenAI({
-    baseURL:
-      process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
+    baseURL: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
     apiKey,
   });
 
   const { model, messages, ...rest } = payload || {};
 
-  const response = await client.chat.completions.create({
-    model:
-      model ||
-      process.env.DEEPSEEK_MODEL ||
-      'deepseek-chat',
+  return client.chat.completions.create({
+    model: model || process.env.DEEPSEEK_MODEL || 'deepseek-chat',
     messages,
     temperature: 0.35,
     max_tokens: 1600,
     ...rest,
   });
-
-  console.log('========== DEEPSEEK RESPONSE ==========');
-  console.dir(response, { depth: null });
-  console.log('=======================================');
-
-  return response;
 }
-   
+
+async function callLlamaChat(payload) {
+  const apiKey = process.env.LLAMA_API_KEY;
+  const baseURL = process.env.LLAMA_API_BASE_URL;
+
+  if (!apiKey || !baseURL) {
+    throw new Error('LLAMA_API_KEY or LLAMA_API_BASE_URL missing');
+  }
+
+  const client = new OpenAI({
+    baseURL,
+    apiKey,
+  });
+
+  const { model, messages, ...rest } = payload || {};
+
+  return client.chat.completions.create({
+    model: model || process.env.LLAMA_MODEL || 'llama-3.1-8b-instruct',
+    messages,
+    temperature:
+      typeof process.env.LLAMA_TEMPERATURE !== 'undefined'
+        ? Number(process.env.LLAMA_TEMPERATURE)
+        : 0.8,
+    max_tokens:
+      typeof process.env.LLAMA_MAX_TOKENS !== 'undefined'
+        ? Number(process.env.LLAMA_MAX_TOKENS)
+        : 512,
+    ...rest,
+  });
+}
+
+async function callVisionChat({ userPrompt, images, postContext = '' }) {
+  const apiKey = process.env.OPENAI_VISION_API_KEY || process.env.OPENAI_API_KEY;
+
+  if (!apiKey) {
+    return {
+      ok: false,
+      text:
+        'I received the image, but image analysis is not configured yet. Add OPENAI_API_KEY to the backend .env file and set OPENAI_VISION_MODEL=gpt-4o-mini.',
+    };
+  }
+
   const client = new OpenAI({
     apiKey,
     baseURL:
@@ -341,8 +373,7 @@ function isJobSearchPrompt(text = '') {
 
   if (isBusinessPrompt(t)) return false;
 
-  // Be conservative: only match when user explicitly asks to find/apply for jobs
-  return /\b(find (me )? a job|looking for a job|looking for work|find jobs|vacanc(?:y|ies)|apply (for|to)|where can i apply|available job|available jobs|hiring\?)\b/i.test(
+  return /\b(job|jobs|work|hiring|vacancy|vacancies|career|careers|apply|application|learnership|internship|graduate|employment|opportunity|opportunities|looking for a job|looking for job|looking for work|find me a job|find jobs|available job|available jobs|job around|jobs around|job in|jobs in|work around|work in)\b/i.test(
     t
   );
 }
@@ -1358,13 +1389,24 @@ async function handleCareerWorkspace(req, res) {
         postContext,
       });
 
-      // Do not short-circuit the AI flow if vision is not configured; continue
-      // to DeepSeek and attach the result as additional context.
       if (!vision.ok) {
-        imageAnalysis = vision.text || buildImageNoConfigAnswer();
-      } else {
-        imageAnalysis = vision.text;
+        const answer = vision.text || buildImageNoConfigAnswer();
+
+        return res.json({
+          ok: true,
+          answer,
+          reply: answer,
+          response: answer,
+          text: answer,
+          content: answer,
+          intent: 'image-analysis',
+          dateContext: date,
+          imageCount: images.length,
+          source: 'vision-not-configured',
+        });
       }
+
+      imageAnalysis = vision.text;
     }
 
     const canUseAi = true;
@@ -1380,10 +1422,14 @@ async function handleCareerWorkspace(req, res) {
     } else if (intent === 'image-analysis') {
       fallbackAnswer = imageAnalysis || buildImageNoConfigAnswer();
     } else {
-      // Default fallback for when no specialized fallback applies. Most
-      // general queries should still flow to DeepSeek.
-      fallbackAnswer =
-        'I am having trouble reaching the AI service right now. Please try again in a moment.';
+      fallbackAnswer = `I understand what you mean.
+
+Please give me one more detail so I can answer properly:
+- What result do you want?
+- Which location?
+- Is this about a job, business, CV, image, post, or company?
+
+Then I’ll give you a direct answer and next steps.`;
     }
 
     if (!canUseAi) {
@@ -1400,9 +1446,6 @@ async function handleCareerWorkspace(req, res) {
         source: 'fallback',
       });
     }
-
-    // Log prompt + intent for debugging
-    console.log('AI ROUTE HIT:', { prompt: userPrompt, intent });
 
     try {
       const out = await callDeepseekChat({
@@ -1738,23 +1781,22 @@ router.post('/reply', async (req, res) => {
 
     const intent = detectWorkspaceIntent(cleanedMessage, false, '');
 
+    const prompt = `You are a helpful FaceMeX assistant.
+
+Current date:
+Today is ${date.readableDateTime}.
+Short date: ${date.shortDate}.
+Timezone: ${date.timeZone}.
+
+Style: ${style || 'clear and friendly'}
+Intent: ${intent}
+
+Reply naturally to:
+${cleanedMessage}`;
+
     try {
-      const out = await callDeepseekChat({
-        messages: [
-          {
-            role: 'system',
-            content: buildGeneralSystemPrompt({
-              intent,
-              userText: cleanedMessage,
-            }),
-          },
-          {
-            role: 'user',
-            content: cleanedMessage,
-          },
-        ],
-        temperature: 0.4,
-        max_tokens: 700,
+      const out = await callLlamaChat({
+        messages: [{ role: 'user', content: prompt }],
       });
 
       const response = getAiText(out);
@@ -1763,17 +1805,33 @@ router.post('/reply', async (req, res) => {
         return res.json({
           success: true,
           response,
-          source: 'deepseek-api',
+          source: 'llama-api',
         });
       }
     } catch (e) {
-      console.error('reply deepseek error', e);
+      console.error('reply llama error', e);
     }
+
+    const out = await callDeepseekChat({
+      messages: [
+        {
+          role: 'system',
+          content: buildGeneralSystemPrompt({
+            intent,
+            userText: cleanedMessage,
+          }),
+        },
+        {
+          role: 'user',
+          content: cleanedMessage,
+        },
+      ],
+    });
 
     return res.json({
       success: true,
-      response: 'I am having trouble reaching the AI service right now. Please try again in a moment.',
-      source: 'deepseek-fallback',
+      response: getAiText(out),
+      source: 'deepseek-api',
     });
   } catch (err) {
     return res.json({
