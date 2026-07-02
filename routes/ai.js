@@ -98,32 +98,41 @@ function normalizeUserPromptText(text = '') {
 --------------------------------------------- */
 
 async function callDeepseekChat(payload) {
-  const apiKey = process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY;
+  const apiKey =
+    process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY;
 
   if (!apiKey) {
-    throw new Error('DEEPSEEK_API_KEY or OPENAI_API_KEY missing');
+    throw new Error(
+      'DEEPSEEK_API_KEY or OPENAI_API_KEY missing'
+    );
   }
 
   const client = new OpenAI({
-    baseURL: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
+    baseURL:
+      process.env.DEEPSEEK_BASE_URL ||
+      'https://api.deepseek.com',
     apiKey,
   });
 
   const { model, messages, ...rest } = payload || {};
 
-const response = await client.chat.completions.create({
-  model: model || process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-  messages,
-  temperature: 0.35,
-  max_tokens: 1600,
-  ...rest,
-});
+  const response = await client.chat.completions.create({
+    model:
+      model ||
+      process.env.DEEPSEEK_MODEL ||
+      'deepseek-chat',
+    messages,
+    temperature: 0.35,
+    max_tokens: 1600,
+    ...rest,
+  });
 
-console.log('========== DEEPSEEK RESPONSE ==========');
-console.dir(response, { depth: null });
-console.log('=======================================');
+  console.log('========== DEEPSEEK RESPONSE ==========');
+  console.dir(response, { depth: null });
+  console.log('=======================================');
 
-return response;
+  return response;
+}
    
   const client = new OpenAI({
     apiKey,
