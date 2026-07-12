@@ -48,7 +48,7 @@ const PaymentSchema = new mongoose.Schema(
 
     tier: {
       type: String,
-      enum: ['pro', 'creator', 'business', 'exclusive', 'verified'],
+      enum: ['pro', 'creator', 'business', 'exclusive', 'verified', 'mexa_plus', 'mexa_pro','mexa_business', ],
       required: true,
       index: true,
     },
@@ -164,6 +164,27 @@ const PLAN_CONFIG = {
     type: 'addon',
     addon: 'verified',
   },
+
+  mexa_plus: {
+  tier: "mexa_plus",
+  name: "MEXA Plus",
+  amountCents: 28000, // R280.00
+  type: "subscription",
+},
+
+mexa_pro: {
+  tier: "mexa_pro",
+  name: "MEXA Pro",
+  amountCents: 57000, // R580.00
+  type: "subscription",
+},
+
+mexa_business: {
+  tier: "mexa_business",
+  name: "MEXA Business",
+  amountCents: 158000, // R1,580.00
+  type: "subscription",
+},
 };
 
 function clean(value) {
