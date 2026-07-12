@@ -194,8 +194,13 @@ function clean(value) {
 function normalizeTier(tier) {
   const t = clean(tier).toLowerCase();
 
-  if (t === 'creator+') return 'creator';
-  if (t === 'verified-badge') return 'verified';
+  if (t === "creator+") return "creator";
+  if (t === "verified-badge") return "verified";
+
+  // MEXA plans
+  if (t === "mexa-plus") return "mexa_plus";
+  if (t === "mexa-pro") return "mexa_pro";
+  if (t === "mexa-business") return "mexa_business";
 
   return t;
 }
