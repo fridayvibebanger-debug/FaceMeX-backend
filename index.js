@@ -21,6 +21,7 @@ import reactionsRouter from './routes/reactions.js';
 import billingRouter from './routes/billing.js';
 import paymentsRouter from './routes/payments.js';
 import aiRouter from './routes/ai.js';
+import mexaRouter from './routes/mexa.js';
 import businessRouter from './routes/business.js';
 import safetyRouter from './routes/safety.js';
 import authRouter from './routes/auth.js';
@@ -36,6 +37,7 @@ import azureUploadsRouter from './routes/azureUploads.js';
 import uploadsRouter from './routes/uploads.js';
 import translateRouter from './routes/translate.js';
 import youtubeRouter from './routes/youtube.js';
+import mexaRouter from './routes/mexa.js';
 
 try {
   const rootEnvLocal = new URL('../.env.local', import.meta.url);
@@ -676,6 +678,7 @@ app.use('/api/payments', paymentsRouter);
   Do not inject templates here.
 */
 app.use('/api/ai', aiRouter);
+app.use('/api/mexa', mexaRouter);
 
 app.use('/api/business', businessRouter);
 app.use('/api/safety', safetyRouter);
