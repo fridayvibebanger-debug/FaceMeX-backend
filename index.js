@@ -37,7 +37,7 @@ import azureUploadsRouter from './routes/azureUploads.js';
 import uploadsRouter from './routes/uploads.js';
 import translateRouter from './routes/translate.js';
 import youtubeRouter from './routes/youtube.js';
-import mexaRouter from './routes/mexa.js';
+
 
 try {
   const rootEnvLocal = new URL('../.env.local', import.meta.url);
