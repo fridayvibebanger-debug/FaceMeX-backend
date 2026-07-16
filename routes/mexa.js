@@ -8,49 +8,38 @@ const openai = new OpenAI({
 });
 
 router.post("/chat", async (req, res) => {
-  try {
-    const { message } = req.body;
+  const { message } = req.body;
 
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4.1-mini",
-      messages: [
-        {
-          role: "system",
-          content: `
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4.1-mini",
+    messages: [
+      {
+        role: "system",
+        content: `
 You are MEXA.
 
-You are the AI Operating System inside FaceMeX.
+You are the AI operating system inside FaceMeX.
 
-You are intelligent, friendly, natural and helpful.
+You help with:
+- Careers
+- Education
+- Business
+- Daily life
 
-Never say you are ChatGPT.
+Always answer naturally.
+Never say you're ChatGPT.
+`,
+      },
+      {
+        role: "user",
+        content: message,
+      },
+    ],
+  });
 
-Never mention OpenAI.
-
-Keep answers conversational.
-
-Help learners, professionals, entrepreneurs, teachers and businesses.
-
-Always sound like a real AI assistant.
-          `,
-        },
-        {
-          role: "user",
-          content: message,
-        },
-      ],
-    });
-
-    res.json({
-      reply: completion.choices[0].message.content,
-    });
-  } catch (error) {
-    console.error(error);
-
-    res.status(500).json({
-      reply: "Sorry, something went wrong.",
-    });
-  }
+  res.json({
+    reply: completion.choices[0].message.content,
+  });
 });
 
 export default router;
