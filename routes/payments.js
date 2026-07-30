@@ -878,7 +878,7 @@ async function verifyPaymentHandler(req, res) {
 /*
   Main routes
 */
-router.post('/initiate', requireAuth, createCheckoutHandler);
+('/initiate', requireAuth, createCheckoutHandler);
 router.post('/verify', requireAuth, verifyPaymentHandler);
 
 /*
