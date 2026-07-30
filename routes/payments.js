@@ -130,14 +130,14 @@ const Payment =
 */
 const PLAN_CONFIG = {
   plus: {
-    tier: 'Get Plus',
+    tier: 'Plus',
     name: 'FaceMeX Plus',
     amountCents: 9999,
     type: 'tier',
   },
 
   pro: {
-    tier: 'Get Pro',
+    tier: 'Pro',
     name: 'FaceMeX Pro',
     amountCents: 25000,
     type: 'tier',
@@ -194,10 +194,11 @@ function clean(value) {
 function normalizeTier(tier) {
   const t = clean(tier).toLowerCase();
 
-  if (t === "creator+") return "creator";
+  if (t === "plus") return "plus";
+  if (t === "pro") return "pro";
+
   if (t === "verified-badge") return "verified";
 
-  // MEXA plans
   if (t === "mexa-plus") return "mexa_plus";
   if (t === "mexa-pro") return "mexa_pro";
   if (t === "mexa-business") return "mexa_business";
@@ -336,7 +337,7 @@ async function updateUserAccess(userId, update) {
 }
 
 async function activateUserAfterPayment(payment) {
-  const config = getPlanConfig(payment.tier);
+  let tierKey = payment.tier;  if (tierKey === "Get Plus") tierKey = "plus"; if (tierKey === "Get Pro") tierKey = "pro";  const config = getPlanConfig(tierKey);
 
   if (!config) {
     throw new Error(`Invalid payment tier: ${payment.tier}`);
