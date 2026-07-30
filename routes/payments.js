@@ -48,7 +48,7 @@ const PaymentSchema = new mongoose.Schema(
 
     tier: {
       type: String,
-      enum: ['pro', 'creator', 'business', 'exclusive', 'verified', 'mexa_plus', 'mexa_pro','mexa_business', ],
+      enum: ['Get Plus', 'Get Pro', 'business', 'exclusive', 'verified', 'mexa_plus', 'mexa_pro','mexa_business', ],
       required: true,
       index: true,
     },
@@ -123,23 +123,23 @@ const Payment =
 /*
   Prices are in cents.
   R99.99 = 9999
-  R299.99 = 29999
+  R250.00 = 25000
   R999.99 = 99999
   R1,999.99 = 199999
   R150.00 = 15000
 */
 const PLAN_CONFIG = {
   pro: {
-    tier: 'pro',
-    name: 'FaceMeX Pro',
+    tier: 'Get Plus',
+    name: 'FaceMeX Plus',
     amountCents: 9999,
     type: 'tier',
   },
 
   creator: {
-    tier: 'creator',
-    name: 'FaceMeX Creator',
-    amountCents: 29999,
+    tier: 'Get Pro',
+    name: 'FaceMeX Pro',
+    amountCents: 25000,
     type: 'tier',
   },
 
