@@ -129,14 +129,14 @@ const Payment =
   R150.00 = 15000
 */
 const PLAN_CONFIG = {
-  pro: {
+  plus: {
     tier: 'Get Plus',
     name: 'FaceMeX Plus',
     amountCents: 9999,
     type: 'tier',
   },
 
-  creator: {
+  pro: {
     tier: 'Get Pro',
     name: 'FaceMeX Pro',
     amountCents: 25000,
