@@ -439,4 +439,6 @@ export const aiRouter = {
   registerAIRoutes,
 };
 
-export default aiRouter;
+const defaultAIRouter = expressModule ? createAIRouter() : null;
+
+export default defaultAIRouter || aiRouter;
