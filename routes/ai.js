@@ -1,7 +1,17 @@
+import { createRequire } from 'node:module';
+
 const PROVIDER_ORDER = ['gemini', 'groq', 'cerebras', 'openrouter'];
 const DEFAULT_TIMEOUT_MS = 25000;
+const RETRYABLE_STATUS_CODES = new Set([401, 402, 403, 408, 429, 500, 502, 503, 504]);
 
-const retryableStatuses = new Set([401, 403, 408, 429, 500, 502, 503, 504]);
+const require = createRequire(import.meta.url);
+let expressModule = null;
+
+try {
+  expressModule = require('express');
+} catch {
+  expressModule = null;
+}
 
 function getProviderConfig(provider) {
   switch (provider) {
@@ -167,7 +177,10 @@ async function callProvider(provider, messages, task) {
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        throw new Error(data?.error?.message || `provider_${provider}_failed`);
+        const errorMessage = data?.error?.message || `provider_${provider}_failed`;
+        const error = new Error(errorMessage);
+        error.status = response.status;
+        throw error;
       }
 
       const content = extractAnswer(data, provider);
@@ -182,7 +195,9 @@ async function callProvider(provider, messages, task) {
       };
     } catch (error) {
       if (error?.name === 'AbortError') {
-        throw new Error(`provider_${provider}_timeout`);
+        const abortError = new Error(`provider_${provider}_timeout`);
+        abortError.status = 408;
+        throw abortError;
       }
       throw error;
     } finally {
@@ -212,7 +227,10 @@ async function callProvider(provider, messages, task) {
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
-      throw new Error(data?.error?.message || `provider_${provider}_failed`);
+      const errorMessage = data?.error?.message || `provider_${provider}_failed`;
+      const error = new Error(errorMessage);
+      error.status = response.status;
+      throw error;
     }
 
     const content = extractAnswer(data, provider);
@@ -227,7 +245,9 @@ async function callProvider(provider, messages, task) {
     };
   } catch (error) {
     if (error?.name === 'AbortError') {
-      throw new Error(`provider_${provider}_timeout`);
+      const abortError = new Error(`provider_${provider}_timeout`);
+      abortError.status = 408;
+      throw abortError;
     }
     throw error;
   } finally {
@@ -241,25 +261,39 @@ function isRetryableFailure(error) {
   }
 
   const message = String(error.message || error || '').toLowerCase();
+  const status = Number(error.status || 0);
 
-  if (message.includes('401') || message.includes('403') || message.includes('408') || message.includes('429')) {
+  if (RETRYABLE_STATUS_CODES.has(status)) {
     return true;
   }
 
-  if (message.includes('500') || message.includes('502') || message.includes('503') || message.includes('504')) {
+  if (
+    message.includes('401') ||
+    message.includes('402') ||
+    message.includes('403') ||
+    message.includes('408') ||
+    message.includes('429') ||
+    message.includes('500') ||
+    message.includes('502') ||
+    message.includes('503') ||
+    message.includes('504') ||
+    message.includes('network') ||
+    message.includes('fetch failed') ||
+    message.includes('timeout') ||
+    message.includes('insufficient balance') ||
+    message.includes('rate limit') ||
+    message.includes('temporarily unavailable')
+  ) {
     return true;
   }
 
-  if (message.includes('network') || message.includes('fetch failed') || message.includes('timeout')) {
-    return true;
-  }
-
-  return retryableStatuses.has(Number(error.status));
+  return false;
 }
 
 export async function generateAIResponse(request = {}) {
-  const messages = normalizeMessages(request.messages || []);
-  const task = String(request.task || request.prompt || 'general_chat').trim();
+  const payload = request?.body || request || {};
+  const messages = normalizeMessages(payload.messages || []);
+  const task = String(payload.task || payload.prompt || 'general_chat').trim();
 
   const errors = [];
 
@@ -288,7 +322,121 @@ export async function generateAIResponse(request = {}) {
   };
 }
 
+function normalizeRequestPayload(req = {}) {
+  const body = req.body || {};
+  const query = req.query || {};
+
+  return {
+    messages: body.messages || body.chat || body.conversation || [],
+    task: body.task || body.prompt || query.task || query.prompt || 'general_chat',
+    provider: body.provider || query.provider || null,
+  };
+}
+
+function sendAIResponse(res, result) {
+  if (result.success) {
+    return res.status(200).json(result);
+  }
+
+  return res.status(502).json(result);
+}
+
+export function createAIRouter() {
+  if (!expressModule) {
+    throw new Error('createAIRouter requires the Express package to be installed in the backend runtime.');
+  }
+
+  const router = expressModule.Router();
+
+  router.get('/health', (req, res) => {
+    res.status(200).json({
+      ok: true,
+      service: 'faceme-ai-router',
+      providers: PROVIDER_ORDER,
+    });
+  });
+
+  router.get('/test', async (req, res) => {
+    try {
+      const result = await generateAIResponse({
+        task: 'test',
+        messages: [{ role: 'user', content: 'Reply with a short confirmation that the AI router is healthy.' }],
+      });
+      return sendAIResponse(res, result);
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: error.message || 'AI test failed',
+      });
+    }
+  });
+
+  router.post('/reply', async (req, res) => {
+    try {
+      const payload = normalizeRequestPayload(req);
+      const result = await generateAIResponse({
+        messages: payload.messages,
+        task: payload.task,
+      });
+      return sendAIResponse(res, result);
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: error.message || 'AI reply failed',
+      });
+    }
+  });
+
+  router.post('/deepseek', async (req, res) => {
+    try {
+      const payload = normalizeRequestPayload(req);
+      const result = await generateAIResponse({
+        messages: payload.messages,
+        task: payload.task,
+      });
+      return sendAIResponse(res, result);
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: error.message || 'DeepSeek route failed',
+      });
+    }
+  });
+
+  router.post('/workspace', async (req, res) => {
+    try {
+      const payload = normalizeRequestPayload(req);
+      const result = await generateAIResponse({
+        messages: payload.messages,
+        task: payload.task,
+      });
+      return sendAIResponse(res, result);
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: error.message || 'Workspace AI route failed',
+      });
+    }
+  });
+
+  return router;
+}
+
+export function registerAIRoutes(app, basePath = '/api/ai') {
+  if (!app || typeof app.use !== 'function') {
+    throw new Error('registerAIRoutes expects an Express app or router instance.');
+  }
+
+  const router = createAIRouter();
+  app.use(basePath, router);
+  return router;
+}
+
 export const aiRouter = {
   PROVIDER_ORDER,
   generateAIResponse,
+  createAIRouter,
+  registerAIRoutes,
 };
+
+export default aiRouter;
