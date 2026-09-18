@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module';
 
-const PROVIDER_ORDER = ['gemini', 'groq', 'cerebras', 'openrouter'];
+const PROVIDER_ORDER = ['groq', 'cerebras', 'openrouter', 'deepseek'];
 const DEFAULT_TIMEOUT_MS = 25000;
 const RETRYABLE_STATUS_CODES = new Set([401, 402, 403, 408, 429, 500, 502, 503, 504]);
 
@@ -18,8 +18,8 @@ function getProviderConfig(provider) {
     case 'gemini':
       return {
         name: 'gemini',
-        model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
-        endpoint: `https://generativelanguage.googleapis.com/v1beta/models/${process.env.GEMINI_MODEL || 'gemini-2.5-flash'}:generateContent?key=${process.env.GEMINI_API_KEY || ''}`,
+        model: process.env.GEMINI_MODEL || 'gemini-3.6-flash',
+        endpoint: `https://generativelanguage.googleapis.com/v1beta/models/${process.env.GEMINI_MODEL || 'gemini-3.6-flash'}:generateContent?key=${process.env.GEMINI_API_KEY || ''}`,
       };
     case 'groq':
       return {
@@ -38,6 +38,12 @@ function getProviderConfig(provider) {
         name: 'openrouter',
         model: process.env.OPENROUTER_MODEL || 'meta-llama/llama-3.1-8b-instruct',
         endpoint: 'https://openrouter.ai/api/v1/chat/completions',
+      };
+    case 'deepseek':
+      return {
+        name: 'deepseek',
+        model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
+        endpoint: 'https://api.deepseek.com/v1/chat/completions',
       };
     default:
       throw new Error(`Unsupported provider: ${provider}`);
@@ -113,6 +119,10 @@ function getProviderAuthHeaders(provider) {
     case 'openrouter':
       return {
         Authorization: `Bearer ${process.env.OPENROUTER_API_KEY || ''}`,
+      };
+    case 'deepseek':
+      return {
+        Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY || ''}`,
       };
     default:
       return {};
@@ -255,7 +265,7 @@ async function callProvider(provider, messages, task) {
   }
 }
 
-function isRetryableFailure(error) {
+export function isRetryableFailure(error) {
   if (!error) {
     return false;
   }
@@ -280,9 +290,13 @@ function isRetryableFailure(error) {
     message.includes('network') ||
     message.includes('fetch failed') ||
     message.includes('timeout') ||
+    message.includes('key_missing') ||
+    message.includes('empty_response') ||
+    message.includes('provider_') ||
     message.includes('insufficient balance') ||
     message.includes('rate limit') ||
-    message.includes('temporarily unavailable')
+    message.includes('temporarily unavailable') ||
+    message.includes('failed')
   ) {
     return true;
   }
@@ -292,15 +306,27 @@ function isRetryableFailure(error) {
 
 export async function generateAIResponse(request = {}) {
   const payload = request?.body || request || {};
-  const messages = normalizeMessages(payload.messages || []);
-  const task = String(payload.task || payload.prompt || 'general_chat').trim();
+  const rawMessages = Array.isArray(payload.messages)
+    ? payload.messages
+    : [
+        payload.message,
+        payload.prompt,
+        payload.content,
+      ].filter((value) => typeof value === 'string' && value.trim());
+
+  const messages = normalizeMessages(rawMessages.length > 0 ? rawMessages : []);
+  const task = String(payload.task || payload.prompt || payload.message || 'general_chat').trim();
 
   const errors = [];
 
   for (const provider of PROVIDER_ORDER) {
     try {
       const result = await callProvider(provider, messages, task);
-      return result;
+      return {
+        ...result,
+        response: result?.content || result?.response || '',
+        text: result?.content || result?.response || '',
+      };
     } catch (error) {
       const status = error?.status || null;
       const message = error?.message || 'provider_error';
@@ -325,17 +351,25 @@ export async function generateAIResponse(request = {}) {
 function normalizeRequestPayload(req = {}) {
   const body = req.body || {};
   const query = req.query || {};
+  const suppliedMessages = body.messages || body.chat || body.conversation || [];
+  const fallbackSingle = body.message || body.prompt || body.content || query.prompt || query.message || '';
 
   return {
-    messages: body.messages || body.chat || body.conversation || [],
-    task: body.task || body.prompt || query.task || query.prompt || 'general_chat',
+    messages: Array.isArray(suppliedMessages) && suppliedMessages.length > 0
+      ? suppliedMessages
+      : (fallbackSingle ? [{ role: 'user', content: String(fallbackSingle) }] : []),
+    task: body.task || body.prompt || body.message || query.task || query.prompt || query.message || 'general_chat',
     provider: body.provider || query.provider || null,
   };
 }
 
 function sendAIResponse(res, result) {
   if (result.success) {
-    return res.status(200).json(result);
+    return res.status(200).json({
+      ...result,
+      response: result.content || result.response || '',
+      text: result.content || result.response || '',
+    });
   }
 
   return res.status(502).json(result);
@@ -415,6 +449,54 @@ export function createAIRouter() {
       return res.status(500).json({
         success: false,
         error: error.message || 'Workspace AI route failed',
+      });
+    }
+  });
+
+  router.post('/pro/job-assistant', async (req, res) => {
+    try {
+      const payload = normalizeRequestPayload(req);
+      const result = await generateAIResponse({
+        messages: payload.messages,
+        task: payload.task || 'job_assistant_chat',
+      });
+      return sendAIResponse(res, result);
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: error.message || 'Job Assistant AI route failed',
+      });
+    }
+  });
+
+  router.post('/pro/resume-builder', async (req, res) => {
+    try {
+      const payload = normalizeRequestPayload(req);
+      const result = await generateAIResponse({
+        messages: payload.messages,
+        task: payload.task || 'resume_builder',
+      });
+      return sendAIResponse(res, result);
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: error.message || 'Resume builder AI route failed',
+      });
+    }
+  });
+
+  router.post('/pro/cover-letter', async (req, res) => {
+    try {
+      const payload = normalizeRequestPayload(req);
+      const result = await generateAIResponse({
+        messages: payload.messages,
+        task: payload.task || 'cover_letter',
+      });
+      return sendAIResponse(res, result);
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: error.message || 'Cover letter AI route failed',
       });
     }
   });
