@@ -1,20 +1,18 @@
-import express from 'express';
-
-const router = express.Router();
+import { api } from './api';
 
 /*
 |--------------------------------------------------------------------------
-| FACEMEX AI ROUTER
+| FACEMEX AI CLIENT
 |--------------------------------------------------------------------------
 |
-| GENERAL CHAT
+| GENERAL AI
 |   Groq -> Gemini -> Cerebras -> OpenRouter -> DeepSeek
 |
-| HOMEWORK / EXPLANATIONS
-|   Gemini -> Groq -> Cerebras -> OpenRouter -> DeepSeek
-|
-| IMAGE ANALYSIS
+| IMAGE
 |   Gemini Vision
+|
+| DOCUMENT
+|   Gemini
 |
 | JOB SEARCH
 |   Gemini + Google Search
@@ -22,1619 +20,1139 @@ const router = express.Router();
 | JOB VERIFICATION
 |   Gemini + Google Search
 |
-| CURRENT INFORMATION
+| DOCUMENT VERIFICATION
 |   Gemini + Google Search
+|
+| WEB VERIFICATION
+|   Gemini + Google Search
+|
+| LESSON / HOMEWORK
+|   General AI unless current web information is required
 |
 |--------------------------------------------------------------------------
 */
 
-// ============================================================================
-// PROVIDERS
-// ============================================================================
-
-const PROVIDERS = {
-  gemini: {
-    model:
-      process.env.GEMINI_MODEL ||
-      'gemini-3.6-flash',
-
-    endpoint:
-      'https://generativelanguage.googleapis.com/v1beta/models',
-  },
-
-  groq: {
-    model:
-      process.env.GROQ_MODEL ||
-      'llama-3.3-70b-versatile',
-
-    endpoint:
-      'https://api.groq.com/openai/v1/chat/completions',
-  },
-
-  cerebras: {
-    model:
-      process.env.CEREBRAS_MODEL ||
-      'gpt-oss-120b',
-
-    endpoint:
-      'https://api.cerebras.ai/v1/chat/completions',
-  },
-
-  openrouter: {
-    model:
-      process.env.OPENROUTER_MODEL ||
-      'meta-llama/llama-3.1-8b-instruct',
-
-    endpoint:
-      'https://openrouter.ai/api/v1/chat/completions',
-  },
-
-  deepseek: {
-    model:
-      process.env.DEEPSEEK_MODEL ||
-      'deepseek-chat',
-
-    endpoint:
-      'https://api.deepseek.com/chat/completions',
-  },
-};
-
-// ============================================================================
-// API KEYS
-// ============================================================================
-
-function getApiKey(provider) {
-  const keys = {
-    gemini: process.env.GEMINI_API_KEY,
-    groq: process.env.GROQ_API_KEY,
-    cerebras: process.env.CEREBRAS_API_KEY,
-    openrouter: process.env.OPENROUTER_API_KEY,
-    deepseek: process.env.DEEPSEEK_API_KEY,
-  };
-
-  return keys[provider];
+export interface AIReplyContextMessage {
+  sender: string;
+  content: string;
 }
 
-// ============================================================================
-// SYSTEM PROMPT
-// ============================================================================
+export interface AIReplyImage {
+  data: string;
+  mimeType: string;
+  name?: string;
+}
 
-function getSystemPrompt(task) {
-  const base = `
+export interface AIReplyDocument {
+  data?: string;
+  url?: string;
+  mimeType: string;
+  name?: string;
+}
+
+export interface AIReplyOptions {
+  context: AIReplyContextMessage[];
+
+  userMessage: string;
+
+  tone?: 'professional' | 'casual' | 'friendly';
+
+  maxLength?: number;
+
+  image?: AIReplyImage | null;
+
+  document?: AIReplyDocument | null;
+
+  verify?: boolean;
+
+  /*
+   * Explicit request type.
+   */
+  type?:
+    | 'reply'
+    | 'vision'
+    | 'document'
+    | 'lesson'
+    | 'homework'
+    | 'job-search'
+    | 'job-verification'
+    | 'document-verification'
+    | 'web-verification';
+}
+
+/*
+|--------------------------------------------------------------------------
+| HELPERS
+|--------------------------------------------------------------------------
+*/
+
+function hasImage(
+  image?: AIReplyImage | null
+): boolean {
+  return Boolean(
+    image &&
+      typeof image.data === 'string' &&
+      image.data.trim().length > 0
+  );
+}
+
+function hasDocument(
+  document?: AIReplyDocument | null
+): boolean {
+  return Boolean(
+    document &&
+      (
+        (
+          typeof document.data === 'string' &&
+          document.data.trim().length > 0
+        ) ||
+        (
+          typeof document.url === 'string' &&
+          document.url.trim().length > 0
+        )
+      )
+  );
+}
+
+/*
+|--------------------------------------------------------------------------
+| TEXT DETECTION
+|--------------------------------------------------------------------------
+*/
+
+function looksLikeVerificationRequest(
+  message: string
+): boolean {
+  const text = message.toLowerCase();
+
+  const words = [
+    'verify',
+    'verification',
+    'is this real',
+    'is this legitimate',
+    'is this legit',
+    'is this genuine',
+    'is this fake',
+    'is this a scam',
+    'scam',
+    'legitimate',
+    'authentic',
+    'real job',
+    'real vacancy',
+    'real company',
+    'real document',
+    'check this job',
+    'check this vacancy',
+    'check this document',
+    'confirm this job',
+    'confirm this vacancy',
+    'confirm this company',
+  ];
+
+  return words.some((word) =>
+    text.includes(word)
+  );
+}
+
+function looksLikeJobSearchRequest(
+  message: string
+): boolean {
+  const text = message.toLowerCase();
+
+  const words = [
+    'find me a job',
+    'find jobs',
+    'find a job',
+    'job search',
+    'search for jobs',
+    'search jobs',
+    'jobs near',
+    'jobs in',
+    'vacancies in',
+    'vacancy in',
+    'hiring in',
+    'employment opportunities',
+    'work opportunities',
+    'career opportunities',
+    'latest jobs',
+    'current jobs',
+    'available jobs',
+    'job openings',
+    'job opportunities',
+    'internships',
+    'internship opportunities',
+    'learnerships',
+    'learnership opportunities',
+  ];
+
+  return words.some((word) =>
+    text.includes(word)
+  );
+}
+
+function looksLikeLessonRequest(
+  message: string
+): boolean {
+  const text = message.toLowerCase();
+
+  const words = [
+    'summarize this lesson',
+    'summarise this lesson',
+    'summarize the lesson',
+    'summarise the lesson',
+    'explain this lesson',
+    'explain the lesson',
+    'teach me this lesson',
+    'what is this lesson about',
+    'lesson summary',
+    'lesson explanation',
+    'help me understand this lesson',
+    'what did i learn',
+    'summarise this',
+    'summarize this',
+  ];
+
+  return words.some((word) =>
+    text.includes(word)
+  );
+}
+
+function looksLikeHomeworkRequest(
+  message: string
+): boolean {
+  const text = message.toLowerCase();
+
+  const words = [
+    'homework',
+    'assignment',
+    'solve this',
+    'solve the question',
+    'help me with this question',
+    'explain this question',
+    'answer this question',
+    'help me understand',
+    'step by step',
+  ];
+
+  return words.some((word) =>
+    text.includes(word)
+  );
+}
+
+/*
+|--------------------------------------------------------------------------
+| REQUEST TYPE
+|--------------------------------------------------------------------------
+*/
+
+function determineRequestType(
+  options: AIReplyOptions
+):
+  | 'reply'
+  | 'vision'
+  | 'document'
+  | 'lesson'
+  | 'homework'
+  | 'job-search'
+  | 'job-verification'
+  | 'document-verification'
+  | 'web-verification' {
+
+  const {
+    userMessage,
+    image,
+    document,
+    verify,
+    type,
+  } = options;
+
+  /*
+   * Explicit type ALWAYS wins.
+   *
+   * This is important because the backend must not
+   * guess what the frontend already knows.
+   */
+  if (type) {
+    return type;
+  }
+
+  const verificationRequested =
+    Boolean(verify) ||
+    looksLikeVerificationRequest(
+      userMessage
+    );
+
+  const jobSearchRequested =
+    looksLikeJobSearchRequest(
+      userMessage
+    );
+
+  /*
+   * Job + attachment + verification
+   */
+  if (
+    jobSearchRequested &&
+    (
+      hasImage(image) ||
+      hasDocument(document)
+    ) &&
+    verificationRequested
+  ) {
+    return 'job-verification';
+  }
+
+  /*
+   * Document verification
+   */
+  if (
+    hasDocument(document) &&
+    verificationRequested
+  ) {
+    return 'document-verification';
+  }
+
+  /*
+   * Image verification
+   */
+  if (
+    hasImage(image) &&
+    verificationRequested
+  ) {
+    return 'web-verification';
+  }
+
+  /*
+   * Live job search
+   */
+  if (jobSearchRequested) {
+    return 'job-search';
+  }
+
+  /*
+   * Image analysis
+   */
+  if (hasImage(image)) {
+    return 'vision';
+  }
+
+  /*
+   * Document analysis
+   */
+  if (hasDocument(document)) {
+    return 'document';
+  }
+
+  /*
+   * Lesson
+   */
+  if (
+    looksLikeLessonRequest(
+      userMessage
+    )
+  ) {
+    return 'lesson';
+  }
+
+  /*
+   * Homework
+   */
+  if (
+    looksLikeHomeworkRequest(
+      userMessage
+    )
+  ) {
+    return 'homework';
+  }
+
+  return 'reply';
+}
+
+/*
+|--------------------------------------------------------------------------
+| CONTEXT
+|--------------------------------------------------------------------------
+*/
+
+function buildConversationContext(
+  context: AIReplyContextMessage[]
+): string {
+
+  return context
+    .slice(-8)
+    .map((message) => {
+
+      const sender =
+        String(
+          message.sender || 'User'
+        ).trim();
+
+      const content =
+        String(
+          message.content || ''
+        ).trim();
+
+      if (!content) {
+        return '';
+      }
+
+      return `${sender}: ${content}`;
+
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
+/*
+|--------------------------------------------------------------------------
+| PROMPTS
+|--------------------------------------------------------------------------
+*/
+
+function buildNormalReplyPrompt(
+  options: AIReplyOptions
+): string {
+
+  const {
+    context,
+    userMessage,
+    tone = 'casual',
+    maxLength = 150,
+  } = options;
+
+  const toneInstruction = {
+    professional:
+      'Write professionally, clearly and politely.',
+
+    casual:
+      'Write naturally and casually like a real person texting.',
+
+    friendly:
+      'Write warmly, naturally and friendly.',
+  }[tone];
+
+  return `
 You are FaceMeX AI.
 
-FaceMeX is an AI education, career, jobs and opportunity platform.
+Help the user respond naturally to the latest message.
 
-Be useful, direct and practical.
+Recent conversation:
+${buildConversationContext(context) || '(No previous conversation)'}
+
+Latest user request:
+${userMessage}
+
+Tone:
+${toneInstruction}
 
 Rules:
-- Do not invent facts.
-- Do not invent jobs.
-- Do not invent employers.
-- Do not invent application links.
-- If you are uncertain, say so.
-- Use simple language when possible.
-- Answer the user's actual question.
-`;
+- Answer the actual request.
+- Return ONLY the response.
+- Do not explain your reasoning.
+- Do not mention that you are an AI.
+- Do not use quotation marks around the response.
+- Keep it natural.
+- Keep it concise.
+- Do not ask unnecessary questions.
+- Maximum ${maxLength} characters.
+`.trim();
+}
 
-  const prompts = {
-    general_chat: `
-You are handling general conversation.
-Answer naturally and efficiently.
-`,
+/*
+|--------------------------------------------------------------------------
+| VISION PROMPT
+|--------------------------------------------------------------------------
+*/
 
-    homework: `
-Help the learner understand the problem.
-Explain the reasoning and steps.
-`,
+function buildVisionPrompt(
+  options: AIReplyOptions
+): string {
 
-    lesson_explanation: `
-Explain educational material clearly using simple examples.
-`,
+  return `
+You are FaceMeX AI's visual analysis assistant.
 
-    workspace: `
-Help the user write, plan, organize, summarize and solve tasks.
-`,
+The user has attached an image.
 
-    job_assistant: `
-Help with CVs, applications, interviews and career preparation.
-`,
+You MUST analyze the actual image before answering.
 
-    job_search: `
-You are FaceMeX's live job-search assistant.
+User's question:
+${options.userMessage}
 
-Use Google Search to find CURRENT job opportunities.
+Rules:
 
-Only report jobs that you can find from real web sources.
+- Inspect the attached image carefully.
+- Read visible text when possible.
+- Describe only information actually visible.
+- Do not invent missing information.
+- If this is a job advertisement, identify:
+  - employer
+  - position
+  - location
+  - requirements
+  - closing date
+  - reference number
+  - application instructions
+- If something is unreadable, say so.
+- If the user asks whether the image is legitimate, do NOT determine legitimacy from appearance alone.
+- Explain what can and cannot be determined from the image.
 
-For each job, try to provide:
+Give the user a useful answer.
+
+Do not talk about internal routing or APIs.
+`.trim();
+}
+
+/*
+|--------------------------------------------------------------------------
+| DOCUMENT PROMPT
+|--------------------------------------------------------------------------
+*/
+
+function buildDocumentPrompt(
+  options: AIReplyOptions
+): string {
+
+  return `
+You are FaceMeX AI's document analysis assistant.
+
+The user has attached a document.
+
+User's question:
+${options.userMessage}
+
+Rules:
+
+- Analyze the actual document.
+- Use the document contents.
+- Do not invent missing information.
+- Accurately handle:
+  - dates
+  - names
+  - numbers
+  - tables
+  - requirements
+  - reference numbers
+  - application instructions
+- If asked to summarize, summarize the actual document.
+- If asked to explain something, explain it clearly.
+- If asked whether the document is legitimate, do not determine legitimacy from appearance alone.
+- Explain what requires external verification.
+
+Return a clear answer.
+`.trim();
+}
+
+/*
+|--------------------------------------------------------------------------
+| LESSON PROMPT
+|--------------------------------------------------------------------------
+*/
+
+function buildLessonPrompt(
+  options: AIReplyOptions
+): string {
+
+  const context =
+    buildConversationContext(
+      options.context
+    );
+
+  return `
+You are FaceMeX AI's learning assistant.
+
+The user is asking about an educational lesson.
+
+User request:
+${options.userMessage}
+
+Lesson/conversation context:
+${context || '(No additional lesson text was supplied)'}
+
+IMPORTANT:
+
+Do NOT answer with a generic description of FaceMeX.
+
+Do NOT describe the "Homework Help process" unless that is actually what the user asked about.
+
+The user wants help with the actual lesson.
+
+If the lesson content is available in the context:
+- Identify the main topic.
+- Summarize the actual lesson.
+- Explain the important concepts.
+- Highlight key terms.
+- Give simple examples where useful.
+- Keep the explanation appropriate for a learner.
+- Do not invent lesson content.
+
+If the actual lesson content is NOT available:
+- Clearly say that the lesson content was not supplied.
+- Ask the user to provide the lesson text, screenshot or material.
+- Do not invent a summary.
+
+When summarizing:
+1. Main idea
+2. Key concepts
+3. Important facts
+4. Simple explanation
+5. What the learner should remember
+
+Return the educational answer directly.
+`.trim();
+}
+
+/*
+|--------------------------------------------------------------------------
+| HOMEWORK PROMPT
+|--------------------------------------------------------------------------
+*/
+
+function buildHomeworkPrompt(
+  options: AIReplyOptions
+): string {
+
+  const context =
+    buildConversationContext(
+      options.context
+    );
+
+  return `
+You are FaceMeX AI's Homework Help assistant.
+
+Student request:
+${options.userMessage}
+
+Recent context:
+${context || '(No previous context)'}
+
+Help the student understand the problem.
+
+Rules:
+- Explain step by step.
+- Do not simply give an unexplained answer.
+- Use simple language.
+- Show calculations when necessary.
+- Explain important terms.
+- Do not invent information.
+- If information is missing, ask for it.
+- If there is a correct final answer, clearly identify it.
+- Help the learner understand how to solve similar problems.
+
+Return the answer directly.
+`.trim();
+}
+
+/*
+|--------------------------------------------------------------------------
+| VERIFICATION PROMPT
+|--------------------------------------------------------------------------
+*/
+
+function buildVerificationPrompt(
+  options: AIReplyOptions
+): string {
+
+  return `
+You are FaceMeX Verification AI.
+
+The user wants information verified using current web sources.
+
+User request:
+${options.userMessage}
+
+IMPORTANT:
+
+1. Analyze the supplied image or document when one is attached.
+
+2. Extract useful identifying information.
+
+3. Identify:
+   - organizations
+   - companies
+   - institutions
+   - job titles
+   - reference numbers
+   - dates
+   - locations
+   - websites
+   - application information
+
+4. Use current web search to verify the information.
+
+5. Prefer authoritative sources:
+   - Government websites
+   - Official company websites
+   - Official university websites
+   - Official recruitment portals
+   - Official institutional sources
+
+6. Compare the supplied information against current sources.
+
+7. Clearly distinguish:
+   - What the attachment says
+   - What the web sources say
+   - What is confirmed
+   - What could not be confirmed
+   - What conflicts
+
+8. Never call a job legitimate merely because the poster looks professional.
+
+9. Never invent a source.
+
+10. Never invent an application URL.
+
+11. If no authoritative matching source can be found, say so.
+
+For job advertisements identify where available:
+
+- Employer
+- Position
+- Location
+- Closing date
+- Reference number
+- Application method
+- Official listing
+- Application URL
+- Any mismatch between the attachment and official source
+
+Use careful verification language:
+
+"Confirmed by official source"
+
+"Matching official listing found"
+
+"Could not independently verify"
+
+"Details do not match"
+
+"Needs further verification"
+
+Do not claim certainty beyond the evidence.
+
+Return a useful evidence-based verification.
+`.trim();
+}
+
+/*
+|--------------------------------------------------------------------------
+| PAYLOAD
+|--------------------------------------------------------------------------
+*/
+
+function buildPayload(
+  options: AIReplyOptions,
+  requestType: ReturnType<
+    typeof determineRequestType
+  >
+) {
+
+  const maxLength =
+    options.maxLength ?? 150;
+
+  let prompt: string;
+
+  switch (requestType) {
+
+    case 'vision':
+      prompt =
+        buildVisionPrompt(options);
+      break;
+
+    case 'document':
+      prompt =
+        buildDocumentPrompt(options);
+      break;
+
+    case 'lesson':
+      prompt =
+        buildLessonPrompt(options);
+      break;
+
+    case 'homework':
+      prompt =
+        buildHomeworkPrompt(options);
+      break;
+
+    case 'job-verification':
+    case 'document-verification':
+    case 'web-verification':
+      prompt =
+        buildVerificationPrompt(options);
+      break;
+
+    case 'job-search':
+      prompt = `
+You are FaceMeX's live job search assistant.
+
+Find CURRENT jobs matching the user's request.
+
+User request:
+${options.userMessage}
+
+Use live web search.
+
+Prioritize:
+- Official employer websites
+- Government websites
+- University websites
+- Official recruitment portals
+
+Never invent jobs.
+
+Never invent employers.
+
+Never invent application URLs.
+
+For each useful result provide:
 - Job title
 - Employer
 - Location
 - Closing date if available
 - Source
-- Application URL
-- Posting date if available
+- Application URL if available
+- Important requirements if available
 
-Never invent a job or application URL.
+Clearly distinguish official sources from third-party job boards.
 
-Clearly distinguish between:
-- Found on an official employer/government source
-- Found on a legitimate job board
-- Could not verify
-`,
+If a job cannot be independently verified, say so.
+`.trim();
+      break;
 
-    job_verification: `
-You are FaceMeX's job-verification assistant.
-
-Use Google Search to investigate the job advertisement or job details.
-
-Look for:
-- Official employer website
-- Official careers page
-- Government source
-- Reputable recruitment/job board
-- Matching job title
-- Matching employer
-- Matching location
-- Matching closing date
-- Application URL
-- Signs that the advertisement may be suspicious
-
-Do NOT guarantee that a job is legitimate.
-
-Use these labels:
-
-VERIFIED SOURCE
-LIKELY LEGITIMATE
-NEEDS CAUTION
-COULD NOT VERIFY
-
-Explain the evidence behind the label.
-`,
-
-    current_information: `
-Use Google Search to find current information.
-Prefer reliable and primary sources.
-`,
-
-    resume_builder: `
-Help create a professional CV using only truthful information supplied by the user.
-`,
-
-    cover_letter: `
-Create a professional, specific cover letter without inventing experience.
-`,
-  };
-
-  return (
-    base +
-    (prompts[task] ||
-      prompts.general_chat)
-  ).trim();
-}
-
-// ============================================================================
-// MESSAGE NORMALIZATION
-// ============================================================================
-
-function normalizeMessages(body = {}) {
-  let messages = [];
-
-  if (Array.isArray(body.messages)) {
-    messages = body.messages;
-  } else if (
-    typeof body.message === 'string' &&
-    body.message.trim()
-  ) {
-    messages = [
-      {
-        role: 'user',
-        content: body.message.trim(),
-      },
-    ];
-  } else if (
-    typeof body.prompt === 'string' &&
-    body.prompt.trim()
-  ) {
-    messages = [
-      {
-        role: 'user',
-        content: body.prompt.trim(),
-      },
-    ];
+    case 'reply':
+    default:
+      prompt =
+        buildNormalReplyPrompt(
+          options
+        );
+      break;
   }
 
-  return messages
-    .filter(Boolean)
-    .map((message) => ({
-      role:
-        ['system', 'user', 'assistant'].includes(
-          message.role
-        )
-          ? message.role
-          : 'user',
+  const isVerification =
+    requestType ===
+      'job-verification' ||
+    requestType ===
+      'document-verification' ||
+    requestType ===
+      'web-verification';
 
-      content:
-        typeof message.content === 'string'
-          ? message.content
-          : JSON.stringify(
-              message.content || ''
-            ),
-    }))
-    .filter(
-      (message) =>
-        message.content.trim()
-    );
-}
-
-// ============================================================================
-// CONVERT GEMINI MESSAGES
-// ============================================================================
-
-function convertForGemini(messages) {
-  let systemInstruction = '';
-
-  const contents = [];
-
-  for (const message of messages) {
-    if (message.role === 'system') {
-      systemInstruction +=
-        (systemInstruction ? '\n\n' : '') +
-        message.content;
-
-      continue;
-    }
-
-    contents.push({
-      role:
-        message.role === 'assistant'
-          ? 'model'
-          : 'user',
-
-      parts: [
-        {
-          text: message.content,
-        },
-      ],
-    });
-  }
+  const isLiveSearch =
+    requestType ===
+      'job-search' ||
+    isVerification;
 
   return {
-    systemInstruction,
-    contents,
+
+    /*
+     * This gives the backend the exact task.
+     */
+    task:
+      requestType === 'vision'
+        ? 'vision'
+        : requestType === 'document'
+        ? 'document'
+        : requestType === 'lesson'
+        ? 'lesson_explanation'
+        : requestType === 'homework'
+        ? 'homework'
+        : requestType === 'job-search'
+        ? 'job_search'
+        : requestType ===
+          'job-verification'
+        ? 'job_verification'
+        : requestType ===
+          'document-verification'
+        ? 'document_verification'
+        : requestType ===
+          'web-verification'
+        ? 'job_verification'
+        : 'general_chat',
+
+    type: requestType,
+
+    prompt,
+
+    message:
+      options.userMessage,
+
+    context:
+      options.context,
+
+    verify:
+      Boolean(options.verify) ||
+      isVerification,
+
+    googleSearch:
+      isLiveSearch,
+
+    maxLength,
+
+    image:
+      hasImage(options.image)
+        ? {
+            data:
+              options.image!.data,
+
+            mimeType:
+              options.image!
+                .mimeType ||
+              'image/jpeg',
+
+            name:
+              options.image!.name,
+          }
+        : null,
+
+    document:
+      hasDocument(
+        options.document
+      )
+        ? {
+            data:
+              options.document?.data,
+
+            url:
+              options.document?.url,
+
+            mimeType:
+              options.document!
+                .mimeType ||
+              'application/pdf',
+
+            name:
+              options.document?.name,
+          }
+        : null,
   };
 }
 
-// ============================================================================
-// CONVERT OPENAI FORMAT
-// ============================================================================
+/*
+|--------------------------------------------------------------------------
+| RESPONSE EXTRACTION
+|--------------------------------------------------------------------------
+*/
 
-function convertForOpenAI(
-  messages,
-  systemPrompt
-) {
-  const output = [];
+function extractReply(
+  data: any
+): string {
 
-  if (systemPrompt) {
-    output.push({
-      role: 'system',
-      content: systemPrompt,
-    });
+  let reply = String(
+    data?.text ??
+      data?.reply ??
+      data?.content ??
+      data?.response ??
+      data?.message ??
+      ''
+  ).trim();
+
+  if (!reply) {
+    throw new Error(
+      'The AI service returned an empty response.'
+    );
   }
 
-  for (const message of messages) {
-    if (message.role === 'system') continue;
-
-    output.push({
-      role: message.role,
-      content: message.content,
-    });
-  }
-
-  return output;
-}
-
-// ============================================================================
-// EXTRACT GEMINI TEXT
-// ============================================================================
-
-function extractGeminiText(data) {
-  const parts =
-    data?.candidates?.[0]?.content?.parts;
-
-  if (!Array.isArray(parts)) {
-    return '';
-  }
-
-  return parts
-    .map((part) => part?.text || '')
-    .filter(Boolean)
-    .join('')
+  /*
+   * Remove accidental markdown code fences.
+   */
+  reply = reply
+    .replace(
+      /^```(?:text|markdown)?/i,
+      ''
+    )
+    .replace(
+      /```$/i,
+      ''
+    )
     .trim();
-}
 
-// ============================================================================
-// EXTRACT OPENAI TEXT
-// ============================================================================
-
-function extractOpenAIText(data) {
-  const content =
-    data?.choices?.[0]?.message?.content;
-
-  if (typeof content === 'string') {
-    return content.trim();
-  }
-
-  if (Array.isArray(content)) {
-    return content
-      .map((item) =>
-        typeof item === 'string'
-          ? item
-          : item?.text || ''
+  /*
+   * Remove unnecessary wrapping quotes.
+   */
+  if (
+    (
+      reply.startsWith('"') &&
+      reply.endsWith('"')
+    ) ||
+    (
+      reply.startsWith("'") &&
+      reply.endsWith("'")
+    )
+  ) {
+    reply = reply
+      .substring(
+        1,
+        reply.length - 1
       )
-      .filter(Boolean)
-      .join('')
       .trim();
   }
 
-  return '';
+  return reply;
 }
 
-// ============================================================================
-// GEMINI TEXT
-// ============================================================================
+/*
+|--------------------------------------------------------------------------
+| ERROR EXTRACTION
+|--------------------------------------------------------------------------
+*/
 
-async function callGemini({
-  messages,
-  task,
-  googleSearch = false,
-}) {
-  const apiKey =
-    getApiKey('gemini');
+function extractErrorDetails(
+  error: unknown
+): string {
 
-  if (!apiKey) {
-    throw new Error(
-      'GEMINI_API_KEY is not configured'
+  if (
+    error instanceof Error &&
+    error.message
+  ) {
+
+    try {
+
+      const parsed =
+        JSON.parse(
+          error.message
+        );
+
+      return (
+        parsed?.error ||
+        parsed?.message ||
+        parsed?.details ||
+        error.message
+      );
+
+    } catch {
+
+      return error.message;
+    }
+  }
+
+  return 'Please try again.';
+}
+
+/*
+|--------------------------------------------------------------------------
+| MAIN AI FUNCTION
+|--------------------------------------------------------------------------
+*/
+
+export async function generateAIReply(
+  options: AIReplyOptions
+): Promise<string> {
+
+  const maxLength =
+    options.maxLength ?? 150;
+
+  const requestType =
+    determineRequestType(
+      options
     );
-  }
 
-  const config =
-    PROVIDERS.gemini;
-
-  const converted =
-    convertForGemini(messages);
-
-  const systemPrompt =
-    getSystemPrompt(task);
-
-  const combinedSystem =
-    [
-      systemPrompt,
-      converted.systemInstruction,
-    ]
-      .filter(Boolean)
-      .join('\n\n');
-
-  const payload = {
-    systemInstruction: {
-      parts: [
-        {
-          text: combinedSystem,
-        },
-      ],
-    },
-
-    contents:
-      converted.contents.length
-        ? converted.contents
-        : [
-            {
-              role: 'user',
-              parts: [
-                {
-                  text: 'Hello',
-                },
-              ],
-            },
-          ],
-
-    generationConfig: {
-      temperature:
-        googleSearch ? 0.2 : 0.7,
-
-      maxOutputTokens:
-        googleSearch ? 4000 : 2048,
-    },
-  };
-
-  /*
-   * IMPORTANT:
-   * Google Search is ONLY enabled for tasks
-   * that actually need live web information.
-   */
-  if (googleSearch) {
-    payload.tools = [
-      {
-        google_search: {},
-      },
-    ];
-  }
-
-  const url =
-    `${config.endpoint}/` +
-    `${config.model}:generateContent`;
+  const payload =
+    buildPayload(
+      options,
+      requestType
+    );
 
   console.log(
-    `[FaceMeX AI] Gemini ${googleSearch ? '+ Google Search' : ''}`
+    '[FaceMeX AI] Client request:',
+    {
+      type:
+        requestType,
+
+      task:
+        payload.task,
+
+      googleSearch:
+        payload.googleSearch,
+
+      hasImage:
+        Boolean(
+          payload.image
+        ),
+
+      hasDocument:
+        Boolean(
+          payload.document
+        ),
+    }
   );
 
-  const response =
-    await fetch(url, {
-      method: 'POST',
+  try {
 
-      headers: {
-        'Content-Type':
-          'application/json',
-
-        'x-goog-api-key':
-          apiKey,
-      },
-
-      body: JSON.stringify(
+    /*
+     * ALL requests use the same backend entry point.
+     *
+     * The backend decides:
+     *
+     * General -> Groq first
+     * Search -> Gemini + Google Search
+     * Image -> Gemini
+     * Verification -> Gemini + Search
+     */
+    const data =
+      await api.post(
+        '/api/ai/reply',
         payload
-      ),
-    });
-
-  const raw =
-    await response.text();
-
-  let data;
-
-  try {
-    data = raw
-      ? JSON.parse(raw)
-      : null;
-  } catch {
-    data = {
-      raw,
-    };
-  }
-
-  if (!response.ok) {
-    throw new Error(
-      `Gemini HTTP ${response.status}: ${
-        data?.error?.message ||
-        raw
-      }`
-    );
-  }
-
-  const text =
-    extractGeminiText(data);
-
-  if (!text) {
-    throw new Error(
-      'Gemini returned an empty response'
-    );
-  }
-
-  return {
-    provider: 'gemini',
-    model: config.model,
-    text,
-
-    groundingMetadata:
-      data?.candidates?.[0]
-        ?.groundingMetadata || null,
-  };
-}
-
-// ============================================================================
-// GROQ / CEREBRAS / OPENROUTER / DEEPSEEK
-// ============================================================================
-
-async function callOpenAIProvider({
-  provider,
-  messages,
-  task,
-}) {
-  const apiKey =
-    getApiKey(provider);
-
-  if (!apiKey) {
-    throw new Error(
-      `${provider.toUpperCase()}_API_KEY is not configured`
-    );
-  }
-
-  const config =
-    PROVIDERS[provider];
-
-  const payload = {
-    model: config.model,
-
-    messages:
-      convertForOpenAI(
-        messages,
-        getSystemPrompt(task)
-      ),
-
-    temperature: 0.7,
-
-    max_tokens: 2048,
-  };
-
-  const headers = {
-    'Content-Type':
-      'application/json',
-
-    Authorization:
-      `Bearer ${apiKey}`,
-  };
-
-  if (provider === 'openrouter') {
-    headers['HTTP-Referer'] =
-      'https://facemex.online';
-
-    headers['X-Title'] =
-      'FaceMeX';
-  }
-
-  console.log(
-    `[FaceMeX AI] Trying ${provider} / ${config.model}`
-  );
-
-  const response =
-    await fetch(
-      config.endpoint,
-      {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(
-          payload
-        ),
-      }
-    );
-
-  const raw =
-    await response.text();
-
-  let data;
-
-  try {
-    data = raw
-      ? JSON.parse(raw)
-      : null;
-  } catch {
-    data = {
-      raw,
-    };
-  }
-
-  if (!response.ok) {
-    throw new Error(
-      `${provider} HTTP ${response.status}: ${
-        data?.error?.message ||
-        raw
-      }`
-    );
-  }
-
-  const text =
-    extractOpenAIText(data);
-
-  if (!text) {
-    throw new Error(
-      `${provider} returned an empty response`
-    );
-  }
-
-  return {
-    provider,
-    model: config.model,
-    text,
-  };
-}
-
-// ============================================================================
-// GENERAL CHAT
-// ============================================================================
-
-async function generalChat({
-  messages,
-  task = 'general_chat',
-}) {
-  const providers = [
-    'groq',
-    'gemini',
-    'cerebras',
-    'openrouter',
-    'deepseek',
-  ];
-
-  const errors = [];
-
-  for (const provider of providers) {
-    try {
-      let result;
-
-      if (provider === 'gemini') {
-        result =
-          await callGemini({
-            messages,
-            task,
-            googleSearch: false,
-          });
-      } else {
-        result =
-          await callOpenAIProvider({
-            provider,
-            messages,
-            task,
-          });
-      }
-
-      return {
-        success: true,
-
-        provider:
-          result.provider,
-
-        model:
-          result.model,
-
-        content:
-          result.text,
-
-        response:
-          result.text,
-
-        text:
-          result.text,
-
-        attempted: errors,
-      };
-    } catch (error) {
-      console.error(
-        `[FaceMeX AI] ${provider} failed:`,
-        error.message
       );
 
-      errors.push({
-        provider,
-        error: error.message,
-      });
-    }
-  }
+    let reply =
+      extractReply(data);
 
-  throw new Error(
-    'All general AI providers failed: ' +
-      errors
-        .map(
-          (e) =>
-            `${e.provider}: ${e.error}`
-        )
-        .join(' | ')
-  );
-}
+    /*
+     * Verification and job-search responses
+     * MUST NOT be aggressively truncated.
+     */
+    const noTruncate =
+      requestType ===
+        'job-search' ||
+      requestType ===
+        'job-verification' ||
+      requestType ===
+        'document-verification' ||
+      requestType ===
+        'web-verification' ||
+      requestType ===
+        'vision' ||
+      requestType ===
+        'document' ||
+      requestType ===
+        'lesson' ||
+      requestType ===
+        'homework';
 
-// ============================================================================
-// LIVE GEMINI SEARCH
-// ============================================================================
-
-async function liveGeminiSearch({
-  messages,
-  task,
-}) {
-  const result =
-    await callGemini({
-      messages,
-      task,
-      googleSearch: true,
-    });
-
-  const metadata =
-    result.groundingMetadata;
-
-  const sources = [];
-
-  if (
-    Array.isArray(
-      metadata?.groundingChunks
-    )
-  ) {
-    for (
-      const chunk of
-      metadata.groundingChunks
+    if (
+      noTruncate ||
+      reply.length <= maxLength
     ) {
-      if (chunk?.web?.uri) {
-        sources.push({
-          title:
-            chunk.web.title ||
-            chunk.web.uri,
-
-          url:
-            chunk.web.uri,
-        });
-      }
+      return reply;
     }
-  }
 
-  return {
-    success: true,
-
-    provider: 'gemini',
-
-    model: result.model,
-
-    content: result.text,
-
-    response: result.text,
-
-    text: result.text,
-
-    sources,
-
-    groundingMetadata:
-      metadata || null,
-  };
-}
-
-// ============================================================================
-// TASK DETECTION
-// ============================================================================
-
-function detectTask(body) {
-  if (
-    typeof body.task === 'string' &&
-    body.task.trim()
-  ) {
-    return body.task.trim();
-  }
-
-  const text =
-    [
-      body.message,
-      body.prompt,
-      ...(Array.isArray(body.messages)
-        ? body.messages.map(
-            (m) => m?.content || ''
+    /*
+     * Normal social/chat replies can be short.
+     */
+    return (
+      reply
+        .substring(
+          0,
+          Math.max(
+            0,
+            maxLength - 3
           )
-        : []),
-    ]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase();
-
-  /*
-   * Job searches should go to Gemini + Google Search.
-   */
-
-  const jobWords = [
-    'job',
-    'jobs',
-    'vacancy',
-    'vacancies',
-    'hiring',
-    'employment',
-    'work opportunity',
-    'careers',
-    'career opportunity',
-    'apply for',
-  ];
-
-  const verificationWords = [
-    'is this job legit',
-    'is this job legitimate',
-    'verify this job',
-    'verify job',
-    'real job',
-    'scam job',
-    'fake job',
-    'legitimate job',
-    'is this vacancy real',
-  ];
-
-  if (
-    verificationWords.some(
-      (word) =>
-        text.includes(word)
-    )
-  ) {
-    return 'job_verification';
-  }
-
-  if (
-    jobWords.some(
-      (word) =>
-        text.includes(word)
-    )
-  ) {
-    return 'job_search';
-  }
-
-  return 'general_chat';
-}
-
-// ============================================================================
-// IMAGE NORMALIZATION
-// ============================================================================
-
-function getImageFromBody(body) {
-  let image =
-    body.image ||
-    body.imageData ||
-    body.imageBase64 ||
-    body.imageUrl ||
-    body.url;
-
-  let mimeType =
-    body.mimeType ||
-    body.mime_type ||
-    'image/jpeg';
-
-  if (
-    !image &&
-    body.attachment
-  ) {
-    image =
-      body.attachment.data ||
-      body.attachment.base64 ||
-      body.attachment.url;
-
-    mimeType =
-      body.attachment.mimeType ||
-      body.attachment.mime_type ||
-      mimeType;
-  }
-
-  if (
-    !image &&
-    Array.isArray(
-      body.attachments
-    )
-  ) {
-    const attachment =
-      body.attachments.find(
-        (item) =>
-          item?.data ||
-          item?.base64 ||
-          item?.url
-      );
-
-    if (attachment) {
-      image =
-        attachment.data ||
-        attachment.base64 ||
-        attachment.url;
-
-      mimeType =
-        attachment.mimeType ||
-        attachment.mime_type ||
-        mimeType;
-    }
-  }
-
-  if (!image) {
-    return null;
-  }
-
-  return {
-    image,
-    mimeType,
-  };
-}
-
-// ============================================================================
-// IMAGE PREPARATION
-// ============================================================================
-
-async function prepareImage(
-  image,
-  mimeType
-) {
-  /*
-   * Data URL
-   */
-
-  if (
-    image.startsWith(
-      'data:image/'
-    )
-  ) {
-    const match =
-      image.match(
-        /^data:(image\/[^;]+);base64,(.+)$/s
-      );
-
-    if (!match) {
-      throw new Error(
-        'Invalid image data URL'
-      );
-    }
-
-    return {
-      base64: match[2],
-      mimeType: match[1],
-    };
-  }
-
-  /*
-   * Remote image URL
-   */
-
-  if (
-    image.startsWith(
-      'http://'
-    ) ||
-    image.startsWith(
-      'https://'
-    )
-  ) {
-    const response =
-      await fetch(image);
-
-    if (!response.ok) {
-      throw new Error(
-        `Unable to download image: ${response.status}`
-      );
-    }
-
-    const contentType =
-      response.headers.get(
-        'content-type'
-      ) || mimeType;
-
-    const buffer =
-      Buffer.from(
-        await response.arrayBuffer()
-      );
-
-    return {
-      base64:
-        buffer.toString(
-          'base64'
-        ),
-
-      mimeType:
-        contentType.split(';')[0],
-    };
-  }
-
-  /*
-   * Raw Base64
-   */
-
-  return {
-    base64:
-      image
-        .replace(
-          /^data:[^;]+;base64,/i,
-          ''
         )
-        .replace(/\s/g, ''),
+        .trimEnd() +
+      '...'
+    );
 
-    mimeType:
-      mimeType || 'image/jpeg',
-  };
+  } catch (error) {
+
+    console.error(
+      '[FaceMeX AI] Request failed:',
+      error
+    );
+
+    const details =
+      extractErrorDetails(
+        error
+      );
+
+    throw new Error(
+      `Failed to generate FaceMeX AI response. ${details}`
+    );
+  }
 }
-
-// ============================================================================
-// GEMINI IMAGE ANALYSIS
-// ============================================================================
-
-async function imageAnalysis(body) {
-  const input =
-    getImageFromBody(
-      body
-    );
-
-  if (!input) {
-    throw new Error(
-      'No image was provided'
-    );
-  }
-
-  const apiKey =
-    getApiKey('gemini');
-
-  if (!apiKey) {
-    throw new Error(
-      'GEMINI_API_KEY is not configured'
-    );
-  }
-
-  const prepared =
-    await prepareImage(
-      input.image,
-      input.mimeType
-    );
-
-  const prompt =
-    body.prompt ||
-    body.message ||
-    `
-Analyze this image carefully.
-
-If it contains text, read and explain
-the important information.
-
-If it is a job advertisement, extract:
-- employer
-- job title
-- location
-- closing date
-- requirements
-- application method
-
-Do not claim the job is legitimate
-unless it can actually be verified.
-    `.trim();
-
-  const config =
-    PROVIDERS.gemini;
-
-  const payload = {
-    contents: [
-      {
-        role: 'user',
-
-        parts: [
-          {
-            text: prompt,
-          },
-
-          {
-            inlineData: {
-              mimeType:
-                prepared.mimeType,
-
-              data:
-                prepared.base64,
-            },
-          },
-        ],
-      },
-    ],
-
-    generationConfig: {
-      temperature: 0.2,
-
-      maxOutputTokens: 3000,
-    },
-  };
-
-  const response =
-    await fetch(
-      `${config.endpoint}/${config.model}:generateContent`,
-      {
-        method: 'POST',
-
-        headers: {
-          'Content-Type':
-            'application/json',
-
-          'x-goog-api-key':
-            apiKey,
-        },
-
-        body: JSON.stringify(
-          payload
-        ),
-      }
-    );
-
-  const raw =
-    await response.text();
-
-  let data;
-
-  try {
-    data = JSON.parse(raw);
-  } catch {
-    data = {};
-  }
-
-  if (!response.ok) {
-    throw new Error(
-      `Gemini Vision HTTP ${response.status}: ${
-        data?.error?.message ||
-        raw
-      }`
-    );
-  }
-
-  const text =
-    extractGeminiText(data);
-
-  if (!text) {
-    throw new Error(
-      'Gemini Vision returned an empty response'
-    );
-  }
-
-  return {
-    success: true,
-
-    provider: 'gemini',
-
-    model:
-      config.model,
-
-    content: text,
-
-    response: text,
-
-    text,
-  };
-}
-
-// ============================================================================
-// HEALTH
-// ============================================================================
-
-router.get(
-  '/health',
-  (req, res) => {
-    const providers = {};
-
-    for (
-      const provider of
-      Object.keys(PROVIDERS)
-    ) {
-      providers[provider] = {
-        configured:
-          Boolean(
-            getApiKey(provider)
-          ),
-
-        model:
-          PROVIDERS[
-            provider
-          ].model,
-      };
-    }
-
-    res.json({
-      success: true,
-
-      service:
-        'FaceMeX AI',
-
-      status:
-        'online',
-
-      providers,
-    });
-  }
-);
-
-// ============================================================================
-// TEST
-// ============================================================================
-
-router.get(
-  '/test',
-  async (req, res) => {
-    try {
-      const result =
-        await generalChat({
-          messages: [
-            {
-              role: 'user',
-
-              content:
-                'Reply with exactly: FaceMeX AI is working.',
-            },
-          ],
-
-          task:
-            'general_chat',
-        });
-
-      res.json(result);
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        error: error.message,
-      });
-    }
-  }
-);
-
-// ============================================================================
-// GENERAL REPLY
-// ============================================================================
-
-router.post(
-  '/reply',
-  async (req, res) => {
-    try {
-      const messages =
-        normalizeMessages(
-          req.body
-        );
-
-      if (!messages.length) {
-        return res.status(400).json({
-          success: false,
-          error:
-            'Please provide a message.',
-        });
-      }
-
-      const task =
-        detectTask(
-          req.body
-        );
-
-      /*
-       * JOBS -> GEMINI + GOOGLE SEARCH
-       */
-
-      if (
-        task === 'job_search' ||
-        task ===
-          'job_verification' ||
-        task ===
-          'current_information'
-      ) {
-        const result =
-          await liveGeminiSearch({
-            messages,
-            task,
-          });
-
-        return res.json(
-          result
-        );
-      }
-
-      /*
-       * EVERYTHING ELSE -> GROQ FIRST
-       */
-
-      const result =
-        await generalChat({
-          messages,
-          task,
-        });
-
-      return res.json(
-        result
-      );
-    } catch (error) {
-      console.error(
-        '[FaceMeX AI] Reply failed:',
-        error.message
-      );
-
-      return res.status(500).json({
-        success: false,
-
-        error:
-          error.message,
-
-        content: '',
-        response: '',
-        text: '',
-      });
-    }
-  }
-);
-
-// ============================================================================
-// EXPLICIT JOB SEARCH
-// ============================================================================
-
-router.post(
-  '/job-search',
-  async (req, res) => {
-    try {
-      const messages =
-        normalizeMessages(
-          req.body
-        );
-
-      if (!messages.length) {
-        return res.status(400).json({
-          success: false,
-
-          error:
-            'Please provide a job search.',
-        });
-      }
-
-      const result =
-        await liveGeminiSearch({
-          messages,
-
-          task:
-            'job_search',
-        });
-
-      return res.json(
-        result
-      );
-    } catch (error) {
-      console.error(
-        '[FaceMeX Jobs] Search failed:',
-        error.message
-      );
-
-      return res.status(500).json({
-        success: false,
-
-        error:
-          error.message,
-
-        content: '',
-        response: '',
-        text: '',
-      });
-    }
-  }
-);
-
-// ============================================================================
-// EXPLICIT JOB VERIFICATION
-// ============================================================================
-
-router.post(
-  '/job-verification',
-  async (req, res) => {
-    try {
-      const messages =
-        normalizeMessages(
-          req.body
-        );
-
-      if (!messages.length) {
-        return res.status(400).json({
-          success: false,
-
-          error:
-            'Please provide the job details to verify.',
-        });
-      }
-
-      const result =
-        await liveGeminiSearch({
-          messages,
-
-          task:
-            'job_verification',
-        });
-
-      return res.json(
-        result
-      );
-    } catch (error) {
-      console.error(
-        '[FaceMeX Jobs] Verification failed:',
-        error.message
-      );
-
-      return res.status(500).json({
-        success: false,
-
-        error:
-          error.message,
-
-        content: '',
-        response: '',
-        text: '',
-      });
-    }
-  }
-);
-
-// ============================================================================
-// IMAGE ANALYSIS
-// ============================================================================
-
-router.post(
-  '/image-analysis',
-  async (req, res) => {
-    try {
-      const result =
-        await imageAnalysis(
-          req.body || {}
-        );
-
-      res.json(result);
-    } catch (error) {
-      console.error(
-        '[FaceMeX AI] Image analysis failed:',
-        error.message
-      );
-
-      res.status(500).json({
-        success: false,
-
-        error:
-          error.message,
-
-        content: '',
-        response: '',
-        text: '',
-      });
-    }
-  }
-);
-
-// Alias
-router.post(
-  '/analyze-image',
-  async (req, res) => {
-    try {
-      const result =
-        await imageAnalysis(
-          req.body || {}
-        );
-
-      res.json(result);
-    } catch (error) {
-      console.error(
-        '[FaceMeX AI] Image analysis failed:',
-        error.message
-      );
-
-      res.status(500).json({
-        success: false,
-
-        error:
-          error.message,
-
-        content: '',
-        response: '',
-        text: '',
-      });
-    }
-  }
-);
-
-// ============================================================================
-// WORKSPACE
-// ============================================================================
-
-router.post(
-  '/workspace',
-  async (req, res) => {
-    try {
-      const messages =
-        normalizeMessages(
-          req.body
-        );
-
-      const result =
-        await generalChat({
-          messages,
-
-          task:
-            'workspace',
-        });
-
-      res.json(result);
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        error: error.message,
-      });
-    }
-  }
-);
-
-// ============================================================================
-// JOB ASSISTANT
-// ============================================================================
-
-router.post(
-  '/pro/job-assistant',
-  async (req, res) => {
-    try {
-      const messages =
-        normalizeMessages(
-          req.body
-        );
-
-      const result =
-        await generalChat({
-          messages,
-
-          task:
-            'job_assistant',
-        });
-
-      res.json(result);
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        error: error.message,
-      });
-    }
-  }
-);
-
-// ============================================================================
-// RESUME
-// ============================================================================
-
-router.post(
-  '/pro/resume-builder',
-  async (req, res) => {
-    try {
-      const messages =
-        normalizeMessages(
-          req.body
-        );
-
-      const result =
-        await generalChat({
-          messages,
-
-          task:
-            'resume_builder',
-        });
-
-      res.json(result);
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        error: error.message,
-      });
-    }
-  }
-);
-
-// ============================================================================
-// COVER LETTER
-// ============================================================================
-
-router.post(
-  '/pro/cover-letter',
-  async (req, res) => {
-    try {
-      const messages =
-        normalizeMessages(
-          req.body
-        );
-
-      const result =
-        await generalChat({
-          messages,
-
-          task:
-            'cover_letter',
-        });
-
-      res.json(result);
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        error: error.message,
-      });
-    }
-  }
-);
-
-// ============================================================================
-// REGISTER
-// ============================================================================
-
-export function registerAIRoutes(
-  app,
-  basePath = '/api/ai'
-) {
-  app.use(
-    basePath,
-    router
-  );
-
-  console.log(
-    `[FaceMeX AI] Routes registered at ${basePath}`
-  );
-}
-
-export default router;
