@@ -1,239 +1,70 @@
-import { createRequire } from 'node:module';
+import express from 'express';
 
-const require = createRequire(import.meta.url);
-
-let expressModule = null;
-
-try {
-  expressModule = require('express');
-} catch {
-  expressModule = null;
-}
+const router = express.Router();
 
 /*
 |--------------------------------------------------------------------------
 | FaceMeX AI Router
 |--------------------------------------------------------------------------
+| Stable version
 |
-| FaceMeX is task-aware.
+| Primary:
+|   Gemini
 |
-| GENERAL CHAT
-|   Groq -> Gemini -> Cerebras -> OpenRouter -> DeepSeek
+| Fallbacks:
+|   Groq
+|   Cerebras
+|   OpenRouter
+|   DeepSeek
 |
-| EDUCATION / SEARCH / MULTIMODAL
-|   Gemini -> Groq -> Cerebras -> OpenRouter -> DeepSeek
-|
-| JOB SEARCH / VERIFICATION / WEB
-|   Gemini + Google Search -> fallbacks
-|
+| IMPORTANT:
+| Keep this version stable before adding multimodal/search features.
 |--------------------------------------------------------------------------
 */
 
-/*
-|--------------------------------------------------------------------------
-| Provider routing
-|--------------------------------------------------------------------------
-*/
+// -----------------------------------------------------------------------------
+// PROVIDER ORDER
+// -----------------------------------------------------------------------------
 
-const ROUTES = {
-  general_chat: [
-    'groq',
-    'gemini',
-    'cerebras',
-    'openrouter',
-    'deepseek',
-  ],
-
-  homework: [
-    'gemini',
-    'groq',
-    'cerebras',
-    'openrouter',
-    'deepseek',
-  ],
-
-  lesson_explanation: [
-    'gemini',
-    'groq',
-    'cerebras',
-    'openrouter',
-    'deepseek',
-  ],
-
-  video_explanation: [
-    'gemini',
-    'groq',
-    'cerebras',
-    'openrouter',
-    'deepseek',
-  ],
-
-  image_analysis: [
-    'gemini',
-    'groq',
-    'openrouter',
-  ],
-
-  document_analysis: [
-    'gemini',
-    'groq',
-    'cerebras',
-    'openrouter',
-    'deepseek',
-  ],
-
-  summarization: [
-    'gemini',
-    'groq',
-    'cerebras',
-    'openrouter',
-    'deepseek',
-  ],
-
-  web_search: [
-    'gemini',
-    'groq',
-    'cerebras',
-    'openrouter',
-    'deepseek',
-  ],
-
-  current_information: [
-    'gemini',
-    'groq',
-    'cerebras',
-    'openrouter',
-    'deepseek',
-  ],
-
-  job_search: [
-    'gemini',
-    'groq',
-    'cerebras',
-    'openrouter',
-    'deepseek',
-  ],
-
-  job_verification: [
-    'gemini',
-    'groq',
-    'cerebras',
-    'openrouter',
-  ],
-
-  job_assistant: [
-    'groq',
-    'gemini',
-    'cerebras',
-    'openrouter',
-    'deepseek',
-  ],
-
-  resume_builder: [
-    'groq',
-    'gemini',
-    'cerebras',
-    'openrouter',
-    'deepseek',
-  ],
-
-  cover_letter: [
-    'groq',
-    'gemini',
-    'cerebras',
-    'openrouter',
-    'deepseek',
-  ],
-
-  interview: [
-    'groq',
-    'gemini',
-    'cerebras',
-    'openrouter',
-    'deepseek',
-  ],
-
-  workspace_assistant: [
-    'groq',
-    'gemini',
-    'cerebras',
-    'openrouter',
-    'deepseek',
-  ],
-
-  health_check: [
-    'gemini',
-    'groq',
-    'cerebras',
-    'openrouter',
-    'deepseek',
-  ],
-};
-
-const DEFAULT_PROVIDER_ORDER = [
-  'groq',
+const PROVIDER_ORDER = [
   'gemini',
+  'groq',
   'cerebras',
   'openrouter',
   'deepseek',
 ];
 
-const DEFAULT_TIMEOUT_MS = Number(
-  process.env.AI_TIMEOUT_MS || 30000
-);
+// -----------------------------------------------------------------------------
+// PROVIDER CONFIG
+// -----------------------------------------------------------------------------
 
-/*
-|--------------------------------------------------------------------------
-| Provider configuration
-|--------------------------------------------------------------------------
-*/
-
-function getProviderConfig(provider, task = 'general_chat') {
+function getProviderConfig(provider) {
   switch (provider) {
     case 'gemini':
       return {
         name: 'gemini',
-
         model:
           process.env.GEMINI_MODEL ||
           'gemini-3.6-flash',
 
         endpoint:
-          `https://generativelanguage.googleapis.com/v1beta/models/` +
-          `${process.env.GEMINI_MODEL || 'gemini-3.6-flash'}` +
-          `:generateContent?key=${process.env.GEMINI_API_KEY || ''}`,
+          'https://generativelanguage.googleapis.com/v1beta/models',
       };
 
-    case 'groq': {
-      /*
-       * Groq needs a vision-capable model for images.
-       */
-      const isVisionTask =
-        task === 'image_analysis';
-
+    case 'groq':
       return {
         name: 'groq',
-
         model:
-          isVisionTask
-            ? (
-                process.env.GROQ_VISION_MODEL ||
-                'qwen/qwen3.8-27b'
-              )
-            : (
-                process.env.GROQ_MODEL ||
-                'llama-3.3-70b-versatile'
-              ),
+          process.env.GROQ_MODEL ||
+          'llama-3.3-70b-versatile',
 
         endpoint:
           'https://api.groq.com/openai/v1/chat/completions',
       };
-    }
 
     case 'cerebras':
       return {
         name: 'cerebras',
-
         model:
           process.env.CEREBRAS_MODEL ||
           'gpt-oss-120b',
@@ -245,7 +76,6 @@ function getProviderConfig(provider, task = 'general_chat') {
     case 'openrouter':
       return {
         name: 'openrouter',
-
         model:
           process.env.OPENROUTER_MODEL ||
           'meta-llama/llama-3.1-8b-instruct',
@@ -257,2205 +87,983 @@ function getProviderConfig(provider, task = 'general_chat') {
     case 'deepseek':
       return {
         name: 'deepseek',
-
         model:
           process.env.DEEPSEEK_MODEL ||
           'deepseek-chat',
 
         endpoint:
-          'https://api.deepseek.com/v1/chat/completions',
+          'https://api.deepseek.com/chat/completions',
       };
 
     default:
-      throw new Error(
-        `Unsupported provider: ${provider}`
-      );
+      return null;
   }
 }
 
-/*
-|--------------------------------------------------------------------------
-| Provider key
-|--------------------------------------------------------------------------
-*/
+// -----------------------------------------------------------------------------
+// API KEY
+// -----------------------------------------------------------------------------
 
-function getProviderKey(provider) {
-  const envName =
-    `${provider.toUpperCase()}_API_KEY`;
+function getProviderApiKey(provider) {
+  switch (provider) {
+    case 'gemini':
+      return process.env.GEMINI_API_KEY;
 
-  return process.env[envName] || '';
+    case 'groq':
+      return process.env.GROQ_API_KEY;
+
+    case 'cerebras':
+      return process.env.CEREBRAS_API_KEY;
+
+    case 'openrouter':
+      return process.env.OPENROUTER_API_KEY;
+
+    case 'deepseek':
+      return process.env.DEEPSEEK_API_KEY;
+
+    default:
+      return null;
+  }
 }
 
-/*
-|--------------------------------------------------------------------------
-| Normalize messages
-|--------------------------------------------------------------------------
-*/
+// -----------------------------------------------------------------------------
+// MESSAGE NORMALIZATION
+// -----------------------------------------------------------------------------
 
-function normalizeMessages(messages = []) {
-  if (!Array.isArray(messages)) {
-    return [];
+function normalizeMessages(body = {}) {
+  let messages = [];
+
+  if (Array.isArray(body.messages)) {
+    messages = body.messages;
+  } else if (typeof body.message === 'string' && body.message.trim()) {
+    messages = [
+      {
+        role: 'user',
+        content: body.message.trim(),
+      },
+    ];
+  } else if (typeof body.prompt === 'string' && body.prompt.trim()) {
+    messages = [
+      {
+        role: 'user',
+        content: body.prompt.trim(),
+      },
+    ];
   }
 
   return messages
-    .filter(
-      (message) =>
-        message &&
-        typeof message === 'object'
-    )
+    .filter(Boolean)
     .map((message) => {
-      let role = 'user';
+      let role = message.role || 'user';
 
-      if (message.role === 'assistant') {
-        role = 'assistant';
+      if (!['system', 'user', 'assistant'].includes(role)) {
+        role = 'user';
       }
 
-      if (message.role === 'system') {
-        role = 'system';
+      let content = message.content;
+
+      if (content === undefined || content === null) {
+        content = '';
+      }
+
+      if (typeof content !== 'string') {
+        content = JSON.stringify(content);
       }
 
       return {
         role,
-
-        content:
-          typeof message.content === 'string'
-            ? message.content.trim()
-            : '',
+        content,
       };
     })
-    .filter(
-      (message) =>
-        message.content.length > 0
-    );
+    .filter((message) => message.content.trim().length > 0);
 }
 
-/*
-|--------------------------------------------------------------------------
-| Normalize attachments
-|--------------------------------------------------------------------------
-|
-| Supported input formats:
-|
-| {
-|   mimeType: "image/jpeg",
-|   data: "BASE64..."
-| }
-|
-| {
-|   mimeType: "application/pdf",
-|   data: "BASE64..."
-| }
-|
-| {
-|   mimeType: "video/mp4",
-|   data: "BASE64..."
-| }
-|
-| {
-|   fileUri: "https://..."
-|   mimeType: "application/pdf"
-| }
-|
-|--------------------------------------------------------------------------
-*/
-
-function normalizeAttachments(
-  payload = {}
-) {
-  let attachments =
-    payload.attachments ||
-    payload.files ||
-    [];
-
-  if (!Array.isArray(attachments)) {
-    attachments = [];
-  }
-
-  /*
-   * Support singular image/file fields too.
-   */
-  if (
-    payload.image &&
-    !attachments.length
-  ) {
-    attachments = [
-      {
-        mimeType:
-          payload.imageMimeType ||
-          'image/jpeg',
-
-        data:
-          typeof payload.image === 'string'
-            ? payload.image
-            : '',
-      },
-    ];
-  }
-
-  if (
-    payload.file &&
-    !attachments.length
-  ) {
-    attachments = [
-      payload.file,
-    ];
-  }
-
-  return attachments
-    .filter(Boolean)
-    .map((file) => ({
-      name:
-        file.name ||
-        file.filename ||
-        null,
-
-      mimeType:
-        file.mimeType ||
-        file.type ||
-        'application/octet-stream',
-
-      data:
-        file.data ||
-        file.base64 ||
-        null,
-
-      fileUri:
-        file.fileUri ||
-        file.uri ||
-        file.url ||
-        null,
-    }));
-}
-
-/*
-|--------------------------------------------------------------------------
-| Detect task automatically
-|--------------------------------------------------------------------------
-*/
-
-function detectTask(
-  message = '',
-  attachments = [],
-  requestedTask = ''
-) {
-  if (
-    requestedTask &&
-    requestedTask !== 'general_chat'
-  ) {
-    return requestedTask;
-  }
-
-  const text =
-    String(message || '')
-      .toLowerCase()
-      .trim();
-
-  /*
-   * Attachments take priority.
-   */
-  if (
-    attachments.some(
-      (file) =>
-        String(
-          file.mimeType || ''
-        ).startsWith('image/')
-    )
-  ) {
-    return 'image_analysis';
-  }
-
-  if (
-    attachments.some(
-      (file) =>
-        String(
-          file.mimeType || ''
-        ) === 'application/pdf'
-    )
-  ) {
-    return 'document_analysis';
-  }
-
-  if (
-    attachments.some(
-      (file) =>
-        String(
-          file.mimeType || ''
-        ).startsWith('video/')
-    )
-  ) {
-    return 'video_explanation';
-  }
-
-  if (
-    attachments.some(
-      (file) =>
-        String(
-          file.mimeType || ''
-        ).startsWith('audio/')
-    )
-  ) {
-    return 'lesson_explanation';
-  }
-
-  /*
-   * Job search.
-   */
-  if (
-    text.includes('find jobs') ||
-    text.includes('find a job') ||
-    text.includes('job vacancies') ||
-    text.includes('job vacancy') ||
-    text.includes('vacancies') ||
-    text.includes('job openings') ||
-    text.includes('jobs near') ||
-    text.includes('jobs in ') ||
-    text.includes('jobs around')
-  ) {
-    return 'job_search';
-  }
-
-  /*
-   * Job verification.
-   */
-  if (
-    text.includes('verify this job') ||
-    text.includes('verify this vacancy') ||
-    text.includes('is this job real') ||
-    text.includes('is this vacancy real') ||
-    text.includes('is this job legitimate') ||
-    text.includes('is this vacancy legitimate') ||
-    text.includes('check this job')
-  ) {
-    return 'job_verification';
-  }
-
-  /*
-   * Web/current information.
-   */
-  if (
-    text.includes('search online') ||
-    text.includes('search the web') ||
-    text.includes('google this') ||
-    text.includes('look online') ||
-    text.includes('latest') ||
-    text.includes('today') ||
-    text.includes('current') ||
-    text.includes('recent')
-  ) {
-    return 'web_search';
-  }
-
-  /*
-   * Summarization.
-   */
-  if (
-    text.includes('summarize') ||
-    text.includes('summarise') ||
-    text.includes('summary') ||
-    text.includes('give me a summary')
-  ) {
-    return 'summarization';
-  }
-
-  /*
-   * Video / lesson.
-   */
-  if (
-    text.includes('explain this video') ||
-    text.includes('explain this lesson') ||
-    text.includes('teach me this lesson') ||
-    text.includes('what does this video') ||
-    text.includes('what is this lesson about')
-  ) {
-    return 'video_explanation';
-  }
-
-  /*
-   * Homework.
-   */
-  if (
-    text.includes('homework') ||
-    text.includes('assignment') ||
-    text.includes('solve this') ||
-    text.includes('help me with maths') ||
-    text.includes('help me with math') ||
-    text.includes('explain this question')
-  ) {
-    return 'homework';
-  }
-
-  return 'general_chat';
-}
-
-/*
-|--------------------------------------------------------------------------
-| System prompt
-|--------------------------------------------------------------------------
-*/
+// -----------------------------------------------------------------------------
+// SYSTEM PROMPT
+// -----------------------------------------------------------------------------
 
 function getSystemPrompt(task = 'general_chat') {
-  const prompts = {
-    general_chat: `
+  const base = `
 You are FaceMeX AI.
 
-FaceMeX is an education, career and opportunity platform.
+FaceMeX is an AI education, career and opportunity platform.
 
-Be helpful, natural, accurate and practical.
+Your job is to give users useful, accurate, practical answers.
 
-Answer directly.
+Rules:
+- Be clear.
+- Be concise when the question is simple.
+- Explain difficult things in simple language.
+- Do not invent facts.
+- If you do not know something, say so.
+- Do not pretend that you performed an action when you did not.
+- Do not fabricate job listings, companies, links or application details.
+- Help the user take the next practical step.
+`;
 
-Do not unnecessarily mention that you are an AI.
-
-If the user asks a simple question, keep the answer concise.
-`.trim(),
+  const taskPrompts = {
+    general_chat: `
+Answer the user's question naturally and directly.
+`,
 
     homework: `
-You are FaceMeX AI Education Tutor.
-
-Teach the student.
-
-Explain difficult concepts step by step in simple language.
-
-Do not just dump an answer.
-
-When solving a problem:
-1. Explain what is being asked.
-2. Show the method.
-3. Work through the solution.
-4. Give the final answer.
-5. Give a short way to remember the concept.
-
-Adapt the explanation to the student's apparent level.
-`.trim(),
-
-    image_analysis: `
-You are FaceMeX AI Vision Tutor.
-
-Analyze the supplied image carefully.
-
-If it contains homework, explain the question and solve it step by step.
-
-If it contains a document, screenshot, chart, diagram or table, explain what it shows.
-
-Do not invent details that cannot be seen.
-
-Clearly distinguish what is visible from what is inferred.
-`.trim(),
-
-    document_analysis: `
-You are FaceMeX AI Document Assistant.
-
-Analyze the supplied document carefully.
-
-You can summarize, explain, extract important information and answer questions about it.
-
-If information is missing from the document, say so.
-
-Do not invent facts.
-`.trim(),
-
-    video_explanation: `
-You are FaceMeX AI Video Lesson Tutor.
-
-Analyze the supplied lesson/video content.
-
-Explain the lesson in simple language.
-
-Identify:
-- main topic
-- important concepts
-- important definitions
-- formulas where applicable
-- examples
-- what the student should remember
-
-Finish with a short practice question when appropriate.
-`.trim(),
+Help the learner understand the problem.
+Show the reasoning or steps where useful.
+Do not simply give an unexplained answer.
+`,
 
     lesson_explanation: `
-You are FaceMeX AI Education Tutor.
+Explain the lesson in simple language.
+Use examples when helpful.
+`,
 
-Explain the lesson clearly and practically.
-
-Teach the concept rather than merely repeating it.
-`.trim(),
-
-    summarization: `
-You are FaceMeX AI.
-
-Summarize the supplied information accurately.
-
-Prioritize:
-- main ideas
-- important facts
-- conclusions
-- actions
-- dates
-- names
-- numbers
-
-Do not add information that is not supported by the source.
-`.trim(),
-
-    web_search: `
-You are FaceMeX AI Research Assistant.
-
-Use current web information when available.
-
-Give the user a clear answer and distinguish current information from general background.
-
-When search results are available, rely on them rather than guessing.
-`.trim(),
-
-    current_information: `
-You are FaceMeX AI Research Assistant.
-
-Use current information from the web when appropriate.
-
-Do not present outdated information as current.
-`.trim(),
-
-    job_search: `
-You are FaceMeX AI Job Search Assistant.
-
-Find useful and relevant job opportunities.
-
-When web search is available:
-- prioritize current listings
-- identify the employer
-- identify the role
-- identify location
-- identify the source
-- identify the application link when available
-- mention the posting date when available
-
-Do not invent job listings.
-
-If you cannot verify something, say that it could not be verified.
-`.trim(),
-
-    job_verification: `
-You are FaceMeX AI Job Verification Assistant.
-
-The user wants to determine whether a job or vacancy appears legitimate.
-
-Use current web information.
-
-Check, where possible:
-- official employer website
-- official careers page
-- recruiter identity
-- application URL
-- posting date
-- consistency of company information
-- suspicious payment requests
-- suspicious contact details
-- duplicate or copied listings
-
-Do not guarantee that a job is legitimate.
-
-Use clear labels such as:
-VERIFIED SOURCE
-LIKELY LEGITIMATE
-NEEDS CAUTION
-COULD NOT VERIFY
-
-Explain the evidence behind the assessment.
-`.trim(),
+    workspace: `
+Act as the user's productive AI workspace assistant.
+Help with writing, planning, summarizing, organizing and problem solving.
+`,
 
     job_assistant: `
-You are FaceMeX AI Career Assistant.
-
-Help the user search, understand and act on job opportunities.
-
-Give practical next steps.
-`.trim(),
+Help the user with career and job-search tasks.
+Do not invent job vacancies or application information.
+`,
 
     resume_builder: `
-You are FaceMeX AI Resume Assistant.
-
-Help create clear, truthful, professional CV/resume content.
-
-Never invent qualifications, employers or experience.
-`.trim(),
+Help the user create or improve a professional CV/resume.
+Use clear professional language.
+`,
 
     cover_letter: `
-You are FaceMeX AI Cover Letter Assistant.
+Help the user create a professional, specific cover letter.
+Avoid generic filler.
+`,
 
-Write professional, specific and truthful cover letters.
-
-Tailor the letter to the job and user's actual background.
-`.trim(),
-
-    interview: `
-You are FaceMeX AI Interview Coach.
-
-Ask realistic interview questions.
-
-Give practical feedback.
-
-Help the user improve their answers without inventing experience.
-`.trim(),
-
-    workspace_assistant: `
-You are FaceMeX AI Workspace Assistant.
-
-Help the user write, organize, analyze and improve documents and ideas.
-`.trim(),
-
-    health_check: `
-You are FaceMeX AI.
-
-Reply exactly as requested.
-`.trim(),
+    deepseek: `
+Provide a direct and useful answer to the user's request.
+`,
   };
 
   return (
-    prompts[task] ||
-    prompts.general_chat
-  );
+    base +
+    (taskPrompts[task] || taskPrompts.general_chat)
+  ).trim();
 }
 
-/*
-|--------------------------------------------------------------------------
-| Does Gemini need Google Search?
-|--------------------------------------------------------------------------
-*/
+// -----------------------------------------------------------------------------
+// ABORT CONTROLLER
+// -----------------------------------------------------------------------------
 
-function shouldUseGoogleSearch(task) {
-  return [
-    'job_search',
-    'job_verification',
-    'web_search',
-    'current_information',
-  ].includes(task);
+function createAbortController(timeoutMs = 45000) {
+  const controller = new AbortController();
+
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+
+  return {
+    controller,
+    clear: () => clearTimeout(timeout),
+  };
 }
 
-/*
-|--------------------------------------------------------------------------
-| Gemini parts
-|--------------------------------------------------------------------------
-*/
+// -----------------------------------------------------------------------------
+// GEMINI MESSAGE CONVERSION
+// -----------------------------------------------------------------------------
 
-function buildGeminiParts(
-  messages,
-  attachments = []
-) {
-  const parts = [];
+function convertMessagesForGemini(messages) {
+  let systemPrompt = '';
 
-  /*
-   * Put conversation text into the request.
-   */
+  const contents = [];
+
   for (const message of messages) {
-    if (!message?.content) {
-      continue;
-    }
-
-    parts.push({
-      text:
-        message.role === 'assistant'
-          ? `Previous FaceMeX AI response:\n${message.content}`
-          : message.content,
-    });
-  }
-
-  /*
-   * Add media/files.
-   */
-  for (const file of attachments) {
-    if (
-      file.data &&
-      file.mimeType
-    ) {
-      parts.push({
-        inlineData: {
-          mimeType:
-            file.mimeType,
-
-          data:
-            String(file.data)
-              .replace(
-                /^data:[^;]+;base64,/,
-                ''
-              ),
-        },
-      });
+    if (message.role === 'system') {
+      systemPrompt +=
+        (systemPrompt ? '\n\n' : '') +
+        message.content;
 
       continue;
     }
 
-    if (
-      file.fileUri &&
-      file.mimeType
-    ) {
-      parts.push({
-        fileData: {
-          mimeType:
-            file.mimeType,
-
-          fileUri:
-            file.fileUri,
+    contents.push({
+      role: message.role === 'assistant' ? 'model' : 'user',
+      parts: [
+        {
+          text: message.content,
         },
-      });
-    }
-  }
-
-  if (!parts.length) {
-    parts.push({
-      text: 'Hello',
-    });
-  }
-
-  return parts;
-}
-
-/*
-|--------------------------------------------------------------------------
-| Build Gemini payload
-|--------------------------------------------------------------------------
-*/
-
-function buildGeminiPayload(
-  messages,
-  task,
-  attachments
-) {
-  const systemPrompt =
-    getSystemPrompt(task);
-
-  const tools = [];
-
-  if (
-    shouldUseGoogleSearch(task)
-  ) {
-    tools.push({
-      google_search: {},
+      ],
     });
   }
 
   return {
-    systemInstruction: {
-      parts: [
-        {
-          text: systemPrompt,
-        },
-      ],
-    },
-
-    contents: [
-      {
-        role: 'user',
-
-        parts:
-          buildGeminiParts(
-            messages,
-            attachments
-          ),
-      },
-    ],
-
-    ...(tools.length
-      ? {
-          tools,
-        }
-      : {}),
-
-    generationConfig: {
-      temperature:
-        task === 'job_verification'
-          ? 0.2
-          : 0.7,
-
-      maxOutputTokens: 4096,
-    },
+    systemPrompt,
+    contents,
   };
 }
 
-/*
-|--------------------------------------------------------------------------
-| Build OpenAI-compatible messages
-|--------------------------------------------------------------------------
-*/
+// -----------------------------------------------------------------------------
+// OPENAI-COMPATIBLE MESSAGE CONVERSION
+// -----------------------------------------------------------------------------
 
-function buildOpenAIContent(
-  messages,
-  attachments,
-  provider
-) {
+function convertMessagesForOpenAI(messages, systemPrompt) {
   const output = [];
 
-  for (const message of messages) {
+  if (systemPrompt) {
     output.push({
-      role:
-        message.role === 'system'
-          ? 'system'
-          : message.role === 'assistant'
-            ? 'assistant'
-            : 'user',
-
-      content:
-        message.content,
+      role: 'system',
+      content: systemPrompt,
     });
   }
 
-  /*
-   * Groq vision.
-   */
-  if (
-    provider === 'groq' &&
-    attachments.length > 0
-  ) {
-    const lastUser =
-      output.findLast(
-        (message) =>
-          message.role === 'user'
-      );
-
-    if (lastUser) {
-      const content = [
-        {
-          type: 'text',
-          text:
-            lastUser.content ||
-            'Analyze this image.',
-        },
-      ];
-
-      for (
-        const file
-        of attachments
-      ) {
-        if (
-          String(
-            file.mimeType || ''
-          ).startsWith('image/')
-        ) {
-          let imageUrl =
-            file.fileUri;
-
-          if (
-            !imageUrl &&
-            file.data
-          ) {
-            imageUrl =
-              `data:${file.mimeType};base64,` +
-              String(file.data)
-                .replace(
-                  /^data:[^;]+;base64,/,
-                  ''
-                );
-          }
-
-          if (imageUrl) {
-            content.push({
-              type: 'image_url',
-
-              image_url: {
-                url: imageUrl,
-              },
-            });
-          }
-        }
-      }
-
-      if (content.length > 1) {
-        lastUser.content =
-          content;
-      }
+  for (const message of messages) {
+    if (message.role === 'system') {
+      continue;
     }
+
+    output.push({
+      role: message.role,
+      content: message.content,
+    });
   }
 
   return output;
 }
 
-/*
-|--------------------------------------------------------------------------
-| Build provider payload
-|--------------------------------------------------------------------------
-*/
+// -----------------------------------------------------------------------------
+// RESPONSE EXTRACTION
+// -----------------------------------------------------------------------------
 
-function buildProviderPayload(
-  provider,
-  messages,
-  task,
-  attachments = []
-) {
-  const systemPrompt =
-    getSystemPrompt(task);
+function extractAnswer(provider, data) {
+  if (!data) {
+    return '';
+  }
 
-  /*
-   * Gemini.
-   */
+  // ---------------------------------------------------------------------------
+  // GEMINI
+  // ---------------------------------------------------------------------------
+
   if (provider === 'gemini') {
-    return buildGeminiPayload(
-      messages,
-      task,
-      attachments
-    );
-  }
+    try {
+      const candidates = data.candidates;
 
-  /*
-   * OpenAI-compatible.
-   */
-  const chatMessages = [
-    {
-      role: 'system',
-      content:
-        systemPrompt,
-    },
+      if (
+        Array.isArray(candidates) &&
+        candidates.length > 0
+      ) {
+        const parts =
+          candidates[0]?.content?.parts;
 
-    ...buildOpenAIContent(
-      messages,
-      attachments,
-      provider
-    ),
-  ];
+        if (Array.isArray(parts)) {
+          const text = parts
+            .map((part) => part?.text || '')
+            .filter(Boolean)
+            .join('');
 
-  return {
-    model:
-      getProviderConfig(
-        provider,
-        task
-      ).model,
-
-    messages:
-      chatMessages,
-
-    temperature:
-      task === 'job_verification'
-        ? 0.2
-        : 0.7,
-
-    max_tokens:
-      4096,
-  };
-}
-
-/*
-|--------------------------------------------------------------------------
-| Extract answer
-|--------------------------------------------------------------------------
-*/
-
-function extractAnswer(
-  payload,
-  provider
-) {
-  /*
-   * Gemini.
-   */
-  if (
-    provider === 'gemini'
-  ) {
-    const candidates =
-      Array.isArray(
-        payload?.candidates
-      )
-        ? payload.candidates
-        : [];
-
-    const parts =
-      candidates[0]
-        ?.content
-        ?.parts || [];
-
-    const text =
-      parts
-        .map((part) =>
-          typeof part?.text === 'string'
-            ? part.text
-            : ''
-        )
-        .join('')
-        .trim();
-
-    if (text) {
-      return text;
+          if (text.trim()) {
+            return text.trim();
+          }
+        }
+      }
+    } catch (error) {
+      console.error(
+        '[FaceMeX AI] Gemini extraction error:',
+        error.message
+      );
     }
+
+    return '';
   }
 
-  /*
-   * OpenAI-compatible.
-   */
-  const choiceContent =
-    payload
-      ?.choices?.[0]
-      ?.message
-      ?.content;
+  // ---------------------------------------------------------------------------
+  // OPENAI-COMPATIBLE PROVIDERS
+  // ---------------------------------------------------------------------------
 
-  if (
-    typeof choiceContent ===
-      'string' &&
-    choiceContent.trim()
-  ) {
-    return choiceContent.trim();
-  }
+  try {
+    const content =
+      data?.choices?.[0]?.message?.content;
 
-  /*
-   * Content arrays.
-   */
-  if (
-    Array.isArray(
-      choiceContent
-    )
-  ) {
-    const joined =
-      choiceContent
-        .map((part) => {
-          if (
-            typeof part ===
-            'string'
-          ) {
-            return part;
+    if (typeof content === 'string') {
+      return content.trim();
+    }
+
+    if (Array.isArray(content)) {
+      return content
+        .map((item) => {
+          if (typeof item === 'string') {
+            return item;
           }
 
-          return (
-            part?.text ||
-            ''
-          );
+          return item?.text || '';
         })
+        .filter(Boolean)
         .join('')
         .trim();
-
-    if (joined) {
-      return joined;
     }
-  }
-
-  /*
-   * Generic fallback.
-   */
-  const fallback =
-    payload?.output?.text ||
-    payload?.text ||
-    '';
-
-  if (
-    typeof fallback ===
-      'string' &&
-    fallback.trim()
-  ) {
-    return fallback.trim();
+  } catch (error) {
+    console.error(
+      `[FaceMeX AI] ${provider} extraction error:`,
+      error.message
+    );
   }
 
   return '';
 }
 
-/*
-|--------------------------------------------------------------------------
-| Extract Google grounding sources
-|--------------------------------------------------------------------------
-*/
+// -----------------------------------------------------------------------------
+// GEMINI REQUEST
+// -----------------------------------------------------------------------------
 
-function extractGroundingSources(
-  payload
-) {
-  const metadata =
-    payload
-      ?.candidates?.[0]
-      ?.groundingMetadata;
-
-  if (!metadata) {
-    return [];
-  }
-
-  const chunks =
-    metadata.groundingChunks ||
-    [];
-
-  return chunks
-    .map((chunk) => {
-      const web =
-        chunk?.web;
-
-      if (
-        web?.uri ||
-        web?.title
-      ) {
-        return {
-          title:
-            web.title ||
-            'Source',
-
-          url:
-            web.uri ||
-            null,
-        };
-      }
-
-      return null;
-    })
-    .filter(Boolean);
-}
-
-/*
-|--------------------------------------------------------------------------
-| Provider auth headers
-|--------------------------------------------------------------------------
-*/
-
-function getProviderAuthHeaders(
-  provider
-) {
-  const key =
-    getProviderKey(provider);
-
-  switch (provider) {
-    case 'gemini':
-      return {};
-
-    case 'groq':
-    case 'cerebras':
-    case 'openrouter':
-    case 'deepseek':
-      return {
-        Authorization:
-          `Bearer ${key}`,
-      };
-
-    default:
-      return {};
-  }
-}
-
-/*
-|--------------------------------------------------------------------------
-| Abort / timeout
-|--------------------------------------------------------------------------
-*/
-
-function createAbortController(
-  timeoutMs =
-    DEFAULT_TIMEOUT_MS
-) {
-  const controller =
-    new AbortController();
-
-  const timer =
-    setTimeout(
-      () => {
-        controller.abort();
-      },
-      timeoutMs
-    );
-
-  return {
-    controller,
-    timer,
-  };
-}
-
-/*
-|--------------------------------------------------------------------------
-| Call provider
-|--------------------------------------------------------------------------
-*/
-
-async function callProvider(
-  provider,
+async function callGemini({
+  apiKey,
+  model,
   messages,
-  task,
-  attachments = []
-) {
-  const config =
-    getProviderConfig(
-      provider,
-      task
-    );
-
-  const providerKey =
-    getProviderKey(
-      provider
-    );
-
-  if (!providerKey) {
-    const error =
-      new Error(
-        `${provider}_key_missing`
-      );
-
-    error.code =
-      'KEY_MISSING';
-
-    error.status =
-      401;
-
-    throw error;
-  }
-
-  const body =
-    buildProviderPayload(
-      provider,
-      messages,
-      task,
-      attachments
-    );
-
-  const {
-    controller,
-    timer,
-  } =
-    createAbortController();
+  systemPrompt,
+}) {
+  const { controller, clear } =
+    createAbortController(45000);
 
   try {
-    const headers = {
-      'Content-Type':
-        'application/json',
+    const converted =
+      convertMessagesForGemini(messages);
 
-      ...getProviderAuthHeaders(
-        provider
-      ),
+    const finalSystemPrompt = [
+      systemPrompt,
+      converted.systemPrompt,
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+
+    const contents =
+      converted.contents.length > 0
+        ? converted.contents
+        : [
+            {
+              role: 'user',
+              parts: [
+                {
+                  text: 'Hello',
+                },
+              ],
+            },
+          ];
+
+    const payload = {
+      systemInstruction: {
+        parts: [
+          {
+            text: finalSystemPrompt,
+          },
+        ],
+      },
+
+      contents,
+
+      generationConfig: {
+        temperature: 0.7,
+        maxOutputTokens: 2048,
+      },
     };
 
-    /*
-     * OpenRouter.
-     */
-    if (
-      provider ===
-      'openrouter'
-    ) {
-      headers[
-        'HTTP-Referer'
-      ] =
-        process.env.OPENROUTER_SITE_URL ||
-        'https://facemex.online';
+    const url =
+      `${getProviderConfig('gemini').endpoint}/` +
+      `${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
-      headers[
-        'X-Title'
-      ] =
-        process.env.OPENROUTER_APP_NAME ||
-        'FaceMeX';
-    }
+    const response = await fetch(url, {
+      method: 'POST',
 
-    const response =
-      await fetch(
-        config.endpoint,
-        {
-          method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
 
-          headers,
+      body: JSON.stringify(payload),
 
-          body:
-            JSON.stringify(body),
+      signal: controller.signal,
+    });
 
-          signal:
-            controller.signal,
-        }
-      );
+    const rawText = await response.text();
 
-    const rawText =
-      await response.text();
-
-    let data = {};
+    let data = null;
 
     try {
-      data =
-        rawText
-          ? JSON.parse(
-              rawText
-            )
-          : {};
+      data = rawText
+        ? JSON.parse(rawText)
+        : null;
     } catch {
       data = {
         raw: rawText,
       };
     }
 
-    if (
-      !response.ok
-    ) {
+    if (!response.ok) {
       const errorMessage =
-        data?.error
-          ?.message ||
-        data?.message ||
+        data?.error?.message ||
         data?.error ||
         rawText ||
-        `provider_${provider}_failed`;
+        `HTTP ${response.status}`;
 
-      const error =
-        new Error(
-          String(
-            errorMessage
-          )
-        );
-
-      error.status =
-        response.status;
-
-      error.provider =
-        provider;
-
-      throw error;
-    }
-
-    const content =
-      extractAnswer(
-        data,
-        provider
+      throw new Error(
+        `Gemini HTTP ${response.status}: ${errorMessage}`
       );
-
-    if (!content) {
-      const error =
-        new Error(
-          `provider_${provider}_empty_response`
-        );
-
-      error.status =
-        502;
-
-      error.provider =
-        provider;
-
-      throw error;
     }
 
-    const sources =
-      provider === 'gemini'
-        ? extractGroundingSources(
-            data
-          )
-        : [];
+    const answer =
+      extractAnswer('gemini', data);
+
+    if (!answer) {
+      throw new Error(
+        'Gemini returned an empty response.'
+      );
+    }
 
     return {
-      success: true,
-
-      provider,
-
-      model:
-        config.model,
-
-      task,
-
-      content,
-
-      response:
-        content,
-
-      text:
-        content,
-
-      sources,
-
-      searched:
-        sources.length > 0,
+      answer,
+      raw: data,
     };
-  } catch (error) {
-    if (
-      error?.name ===
-      'AbortError'
-    ) {
-      const timeoutError =
-        new Error(
-          `provider_${provider}_timeout`
-        );
-
-      timeoutError.status =
-        408;
-
-      timeoutError.provider =
-        provider;
-
-      throw timeoutError;
-    }
-
-    throw error;
   } finally {
-    clearTimeout(timer);
+    clear();
   }
 }
 
-/*
-|--------------------------------------------------------------------------
-| Retry logic
-|--------------------------------------------------------------------------
-*/
+// -----------------------------------------------------------------------------
+// OPENAI-COMPATIBLE REQUEST
+// -----------------------------------------------------------------------------
 
-export function isRetryableFailure(
-  error
-) {
+async function callOpenAICompatible({
+  provider,
+  apiKey,
+  model,
+  messages,
+  systemPrompt,
+}) {
+  const config =
+    getProviderConfig(provider);
+
+  const { controller, clear } =
+    createAbortController(45000);
+
+  try {
+    const finalMessages =
+      convertMessagesForOpenAI(
+        messages,
+        systemPrompt
+      );
+
+    const payload = {
+      model,
+
+      messages: finalMessages,
+
+      temperature: 0.7,
+
+      max_tokens: 2048,
+    };
+
+    const headers = {
+      'Content-Type': 'application/json',
+
+      Authorization: `Bearer ${apiKey}`,
+    };
+
+    if (provider === 'openrouter') {
+      headers['HTTP-Referer'] =
+        process.env.OPENROUTER_SITE_URL ||
+        'https://facemex.online';
+
+      headers['X-Title'] =
+        process.env.OPENROUTER_APP_NAME ||
+        'FaceMeX';
+    }
+
+    const response = await fetch(
+      config.endpoint,
+      {
+        method: 'POST',
+
+        headers,
+
+        body: JSON.stringify(payload),
+
+        signal: controller.signal,
+      }
+    );
+
+    const rawText = await response.text();
+
+    let data = null;
+
+    try {
+      data = rawText
+        ? JSON.parse(rawText)
+        : null;
+    } catch {
+      data = {
+        raw: rawText,
+      };
+    }
+
+    if (!response.ok) {
+      const errorMessage =
+        data?.error?.message ||
+        data?.error ||
+        rawText ||
+        `HTTP ${response.status}`;
+
+      throw new Error(
+        `${provider} HTTP ${response.status}: ${errorMessage}`
+      );
+    }
+
+    const answer =
+      extractAnswer(provider, data);
+
+    if (!answer) {
+      throw new Error(
+        `${provider} returned an empty response.`
+      );
+    }
+
+    return {
+      answer,
+      raw: data,
+    };
+  } finally {
+    clear();
+  }
+}
+
+// -----------------------------------------------------------------------------
+// CALL PROVIDER
+// -----------------------------------------------------------------------------
+
+async function callProvider({
+  provider,
+  messages,
+  systemPrompt,
+}) {
+  const config =
+    getProviderConfig(provider);
+
+  if (!config) {
+    throw new Error(
+      `Unknown provider: ${provider}`
+    );
+  }
+
+  const apiKey =
+    getProviderApiKey(provider);
+
+  if (!apiKey) {
+    throw new Error(
+      `${provider.toUpperCase()}_API_KEY is not configured`
+    );
+  }
+
+  console.log(
+    `[FaceMeX AI] Trying ${provider} / ${config.model}`
+  );
+
+  if (provider === 'gemini') {
+    return callGemini({
+      apiKey,
+      model: config.model,
+      messages,
+      systemPrompt,
+    });
+  }
+
+  return callOpenAICompatible({
+    provider,
+    apiKey,
+    model: config.model,
+    messages,
+    systemPrompt,
+  });
+}
+
+// -----------------------------------------------------------------------------
+// RETRYABLE FAILURE
+// -----------------------------------------------------------------------------
+
+function isRetryableFailure(error) {
   if (!error) {
     return true;
   }
 
-  const status =
-    Number(
-      error.status || 0
-    );
-
-  const retryableStatuses =
-    new Set([
-      400,
-      401,
-      402,
-      403,
-      408,
-      409,
-      429,
-      500,
-      502,
-      503,
-      504,
-    ]);
-
-  if (
-    retryableStatuses.has(
-      status
-    )
-  ) {
-    return true;
-  }
-
   const message =
-    String(
-      error.message ||
-      error ||
-      ''
-    ).toLowerCase();
+    String(error.message || error).toLowerCase();
 
-  const retryableWords = [
-    'key_missing',
-    'timeout',
-    'network',
-    'fetch failed',
-    'rate limit',
-    'temporarily unavailable',
-    'empty_response',
-    'insufficient balance',
-    'quota',
-    'overloaded',
-    'provider_',
-    'failed',
-  ];
-
-  return retryableWords.some(
-    (word) =>
-      message.includes(
-        word
-      )
+  // These should normally allow the next provider
+  // to be attempted.
+  return (
+    message.includes('timeout') ||
+    message.includes('aborted') ||
+    message.includes('429') ||
+    message.includes('500') ||
+    message.includes('502') ||
+    message.includes('503') ||
+    message.includes('504') ||
+    message.includes('rate limit') ||
+    message.includes('temporarily') ||
+    message.includes('empty response') ||
+    message.includes('failed')
   );
 }
 
-/*
-|--------------------------------------------------------------------------
-| Generate AI response
-|--------------------------------------------------------------------------
-*/
+// -----------------------------------------------------------------------------
+// GENERATE AI RESPONSE
+// -----------------------------------------------------------------------------
 
-export async function generateAIResponse(
-  request = {}
-) {
-  const payload =
-    request?.body ||
-    request ||
-    {};
-
-  let rawMessages = [];
-
+export async function generateAIResponse({
+  messages,
+  task = 'general_chat',
+  preferredProvider = null,
+  providerOrder = null,
+} = {}) {
   if (
-    Array.isArray(
-      payload.messages
-    )
-  ) {
-    rawMessages =
-      payload.messages;
-  } else {
-    const singleMessage =
-      payload.message ||
-      payload.prompt ||
-      payload.content;
-
-    if (
-      typeof singleMessage ===
-        'string' &&
-      singleMessage.trim()
-    ) {
-      rawMessages = [
-        {
-          role: 'user',
-
-          content:
-            singleMessage,
-        },
-      ];
-    }
-  }
-
-  const messages =
-    normalizeMessages(
-      rawMessages
-    );
-
-  if (
+    !Array.isArray(messages) ||
     messages.length === 0
   ) {
-    messages.push({
-      role: 'user',
-
-      content:
-        'Hello, introduce yourself as FaceMeX AI.',
-    });
+    throw new Error(
+      'No AI message was provided.'
+    );
   }
 
-  const attachments =
-    normalizeAttachments(
-      payload
-    );
+  const systemPrompt =
+    getSystemPrompt(task);
 
-  const lastUserMessage =
-    [...messages]
-      .reverse()
-      .find(
-        (message) =>
-          message.role ===
-          'user'
-      );
+  let providers = Array.isArray(providerOrder)
+    ? providerOrder
+    : [...PROVIDER_ORDER];
 
-  const task =
-    detectTask(
-      lastUserMessage
-        ?.content || '',
-      attachments,
-      String(
-        payload.task ||
-        ''
-      ).trim()
-    );
-
-  const providers =
-    ROUTES[task] ||
-    DEFAULT_PROVIDER_ORDER;
-
-  const errors = [];
-
-  console.log(
-    `[FaceMeX AI] Task: ${task}`
-  );
-
-  console.log(
-    `[FaceMeX AI] Providers: ${providers.join(
-      ' -> '
-    )}`
-  );
-
+  // If caller explicitly asks for a provider,
+  // try it first and then continue through normal fallback.
   if (
-    attachments.length
+    preferredProvider &&
+    PROVIDER_ORDER.includes(preferredProvider)
   ) {
-    console.log(
-      `[FaceMeX AI] Attachments: ${attachments.length}`
-    );
+    providers = [
+      preferredProvider,
+      ...providers.filter(
+        (provider) =>
+          provider !== preferredProvider
+      ),
+    ];
   }
 
-  for (
-    const provider
-    of providers
-  ) {
-    try {
-      console.log(
-        `[FaceMeX AI] Trying ${provider} for ${task}...`
-      );
+  const attempted = [];
 
+  for (const provider of providers) {
+    try {
       const result =
-        await callProvider(
+        await callProvider({
           provider,
           messages,
-          task,
-          attachments
-        );
+          systemPrompt,
+        });
 
       console.log(
-        `[FaceMeX AI] ${provider} succeeded for ${task}`
+        `[FaceMeX AI] SUCCESS: ${provider}`
       );
 
-      return result;
-    } catch (error) {
-      const errorInfo = {
+      return {
+        success: true,
+
         provider,
 
-        status:
-          error?.status ||
-          null,
+        model:
+          getProviderConfig(provider).model,
 
-        message:
-          error?.message ||
-          'provider_error',
+        content: result.answer,
+
+        response: result.answer,
+
+        text: result.answer,
+
+        attempted,
       };
+    } catch (error) {
+      attempted.push({
+        provider,
 
-      errors.push(
-        errorInfo
-      );
+        error:
+          error?.message ||
+          String(error),
+      });
 
       console.error(
         `[FaceMeX AI] ${provider} failed:`,
-        errorInfo
+        error?.message ||
+          error
       );
 
-      if (
-        isRetryableFailure(
-          error
-        )
-      ) {
-        continue;
+      if (!isRetryableFailure(error)) {
+        break;
       }
-
-      break;
     }
   }
 
+  const summary = attempted
+    .map(
+      (item) =>
+        `${item.provider}: ${item.error}`
+    )
+    .join(' | ');
+
+  throw new Error(
+    `All FaceMeX AI providers failed. ${summary}`
+  );
+}
+
+// -----------------------------------------------------------------------------
+// REQUEST NORMALIZATION
+// -----------------------------------------------------------------------------
+
+function normalizeRequestPayload(body = {}) {
+  const messages =
+    normalizeMessages(body);
+
+  const task =
+    typeof body.task === 'string' &&
+    body.task.trim()
+      ? body.task.trim()
+      : 'general_chat';
+
+  const preferredProvider =
+    typeof body.provider === 'string' &&
+    PROVIDER_ORDER.includes(
+      body.provider.toLowerCase()
+    )
+      ? body.provider.toLowerCase()
+      : null;
+
   return {
-    success: false,
-
-    error:
-      'FaceMeX AI is temporarily unavailable.',
-
-    provider: null,
+    messages,
 
     task,
 
-    details:
-      errors,
+    preferredProvider,
   };
 }
 
-/*
-|--------------------------------------------------------------------------
-| Express request normalization
-|--------------------------------------------------------------------------
-*/
+// -----------------------------------------------------------------------------
+// SEND AI RESPONSE
+// -----------------------------------------------------------------------------
 
-function normalizeRequestPayload(
-  req = {}
-) {
-  const body =
-    req.body || {};
-
-  const query =
-    req.query || {};
-
-  const suppliedMessages =
-    body.messages ||
-    body.chat ||
-    body.conversation ||
-    [];
-
-  const fallbackSingle =
-    body.message ||
-    body.prompt ||
-    body.content ||
-    query.prompt ||
-    query.message ||
-    '';
-
-  return {
-    messages:
-      Array.isArray(
-        suppliedMessages
-      ) &&
-      suppliedMessages.length
-        ? suppliedMessages
-        : fallbackSingle
-          ? [
-              {
-                role: 'user',
-
-                content:
-                  String(
-                    fallbackSingle
-                  ),
-              },
-            ]
-          : [],
-
-    task:
-      body.task ||
-      query.task ||
-      '',
-
-    provider:
-      body.provider ||
-      query.provider ||
-      null,
-
-    attachments:
-      body.attachments ||
-      body.files ||
-      [],
-
-    image:
-      body.image ||
-      null,
-
-    imageMimeType:
-      body.imageMimeType ||
-      null,
-
-    file:
-      body.file ||
-      null,
-  };
-}
-
-/*
-|--------------------------------------------------------------------------
-| Send response
-|--------------------------------------------------------------------------
-*/
-
-function sendAIResponse(
+async function sendAIResponse(
+  req,
   res,
-  result
+  options = {}
 ) {
-  if (
-    result?.success
-  ) {
-    return res
-      .status(200)
-      .json({
-        success: true,
+  try {
+    const payload =
+      normalizeRequestPayload(req.body || {});
 
-        provider:
-          result.provider ||
-          null,
+    if (payload.messages.length === 0) {
+      return res.status(400).json({
+        success: false,
 
-        model:
-          result.model ||
-          null,
+        error:
+          'Please provide a message, prompt, or messages array.',
+      });
+    }
+
+    const result =
+      await generateAIResponse({
+        messages: payload.messages,
 
         task:
-          result.task ||
-          null,
+          options.task ||
+          payload.task,
 
-        content:
-          result.content ||
-          '',
-
-        response:
-          result.content ||
-          result.response ||
-          '',
-
-        text:
-          result.content ||
-          result.text ||
-          '',
-
-        sources:
-          result.sources ||
-          [],
-
-        searched:
-          Boolean(
-            result.searched
-          ),
+        preferredProvider:
+          options.provider ||
+          payload.preferredProvider,
       });
-  }
 
-  return res
-    .status(502)
-    .json({
+    return res.json(result);
+  } catch (error) {
+    console.error(
+      '[FaceMeX AI] Request failed:',
+      error?.message ||
+        error
+    );
+
+    return res.status(500).json({
       success: false,
 
       error:
-        result?.error ||
-        'AI temporarily unavailable',
+        error?.message ||
+        'FaceMeX AI request failed.',
 
-      provider: null,
+      content: '',
 
-      task:
-        result?.task ||
-        null,
+      response: '',
 
-      details:
-        result?.details ||
-        [],
+      text: '',
     });
+  }
 }
 
-/*
-|--------------------------------------------------------------------------
-| Express router
-|--------------------------------------------------------------------------
-*/
+// -----------------------------------------------------------------------------
+// HEALTH
+// -----------------------------------------------------------------------------
 
-export function createAIRouter() {
-  if (!expressModule) {
-    throw new Error(
-      'Express is not installed.'
-    );
+router.get('/health', (req, res) => {
+  const providers = {};
+
+  for (const provider of PROVIDER_ORDER) {
+    const config =
+      getProviderConfig(provider);
+
+    providers[provider] = {
+      configured:
+        Boolean(
+          getProviderApiKey(provider)
+        ),
+
+      model: config?.model || null,
+    };
   }
 
-  const router =
-    expressModule.Router();
+  return res.json({
+    success: true,
 
-  /*
-   * HEALTH
-   */
-  router.get(
-    '/health',
-    (req, res) => {
-      const providers =
-        [
-          'gemini',
-          'groq',
-          'cerebras',
-          'openrouter',
-          'deepseek',
-        ].map(
-          (provider) => ({
-            provider,
+    service: 'FaceMeX AI',
 
-            configured:
-              Boolean(
-                getProviderKey(
-                  provider
-                )
-              ),
+    status: 'online',
 
-            model:
-              getProviderConfig(
-                provider
-              ).model,
-          })
-        );
+    providers,
+  });
+});
 
-      res
-        .status(200)
-        .json({
-          ok: true,
+// -----------------------------------------------------------------------------
+// TEST
+// -----------------------------------------------------------------------------
 
-          service:
-            'facemex-ai-router',
-
-          routes:
-            Object.keys(
-              ROUTES
-            ),
-
-          providers,
-        });
-    }
-  );
-
-  /*
-   * TEST
-   */
-  router.get(
-    '/test',
-    async (
-      req,
-      res
-    ) => {
-      try {
-        const result =
-          await generateAIResponse({
-            task:
-              'health_check',
-
-            messages: [
-              {
-                role: 'user',
-
-                content:
-                  'Reply with exactly: FaceMeX AI is working.',
-              },
-            ],
-          });
-
-        return sendAIResponse(
-          res,
-          result
-        );
-      } catch (error) {
-        return res
-          .status(500)
-          .json({
-            success: false,
-
-            error:
-              error?.message ||
-              'AI test failed',
-          });
-      }
-    }
-  );
-
-  /*
-   * MAIN AI ENDPOINT
-   */
-  router.post(
-    '/reply',
-    async (
-      req,
-      res
-    ) => {
-      try {
-        const payload =
-          normalizeRequestPayload(
-            req
-          );
-
-        console.log(
-          '[FaceMeX AI] /reply request:',
+router.get('/test', async (req, res) => {
+  try {
+    const result =
+      await generateAIResponse({
+        messages: [
           {
-            messageCount:
-              payload.messages
-                .length,
+            role: 'user',
 
-            task:
-              payload.task ||
-              'auto',
+            content:
+              'Reply with exactly: FaceMeX AI is working.',
+          },
+        ],
 
-            attachments:
-              payload.attachments
-                ?.length || 0,
-          }
-        );
+        task: 'health_check',
+      });
 
-        const result =
-          await generateAIResponse({
-            messages:
-              payload.messages,
+    return res.json(result);
+  } catch (error) {
+    console.error(
+      '[FaceMeX AI] Test failed:',
+      error?.message ||
+        error
+    );
 
-            task:
-              payload.task,
+    return res.status(500).json({
+      success: false,
 
-            attachments:
-              payload.attachments,
+      error:
+        error?.message ||
+        'FaceMeX AI test failed.',
+    });
+  }
+});
 
-            image:
-              payload.image,
+// -----------------------------------------------------------------------------
+// GENERAL REPLY
+// -----------------------------------------------------------------------------
 
-            imageMimeType:
-              payload.imageMimeType,
+router.post('/reply', async (req, res) => {
+  return sendAIResponse(req, res);
+});
 
-            file:
-              payload.file,
-          });
+// -----------------------------------------------------------------------------
+// DEEPSEEK
+// -----------------------------------------------------------------------------
 
-        return sendAIResponse(
-          res,
-          result
-        );
-      } catch (error) {
-        console.error(
-          '[FaceMeX AI] /reply fatal error:',
-          error
-        );
+router.post(
+  '/deepseek',
+  async (req, res) => {
+    return sendAIResponse(req, res, {
+      provider: 'deepseek',
 
-        return res
-          .status(500)
-          .json({
-            success: false,
+      task: 'deepseek',
+    });
+  }
+);
 
-            error:
-              error?.message ||
-              'AI reply failed',
-          });
-      }
-    }
-  );
+// -----------------------------------------------------------------------------
+// WORKSPACE
+// -----------------------------------------------------------------------------
 
-  /*
-   * DEEPSEEK BACKWARD COMPATIBILITY
-   */
-  router.post(
-    '/deepseek',
-    async (
-      req,
-      res
-    ) => {
-      try {
-        const payload =
-          normalizeRequestPayload(
-            req
-          );
+router.post(
+  '/workspace',
+  async (req, res) => {
+    return sendAIResponse(req, res, {
+      task: 'workspace',
+    });
+  }
+);
 
-        const result =
-          await generateAIResponse({
-            messages:
-              payload.messages,
+// -----------------------------------------------------------------------------
+// PRO JOB ASSISTANT
+// -----------------------------------------------------------------------------
 
-            task:
-              payload.task ||
-              'general_chat',
+router.post(
+  '/pro/job-assistant',
+  async (req, res) => {
+    return sendAIResponse(req, res, {
+      task: 'job_assistant',
+    });
+  }
+);
 
-            attachments:
-              payload.attachments,
+// -----------------------------------------------------------------------------
+// PRO RESUME BUILDER
+// -----------------------------------------------------------------------------
 
-            image:
-              payload.image,
+router.post(
+  '/pro/resume-builder',
+  async (req, res) => {
+    return sendAIResponse(req, res, {
+      task: 'resume_builder',
+    });
+  }
+);
 
-            imageMimeType:
-              payload.imageMimeType,
+// -----------------------------------------------------------------------------
+// PRO COVER LETTER
+// -----------------------------------------------------------------------------
 
-            file:
-              payload.file,
-          });
+router.post(
+  '/pro/cover-letter',
+  async (req, res) => {
+    return sendAIResponse(req, res, {
+      task: 'cover_letter',
+    });
+  }
+);
 
-        return sendAIResponse(
-          res,
-          result
-        );
-      } catch (error) {
-        return res
-          .status(500)
-          .json({
-            success: false,
-
-            error:
-              error?.message ||
-              'AI route failed',
-          });
-      }
-    }
-  );
-
-  /*
-   * WORKSPACE
-   */
-  router.post(
-    '/workspace',
-    async (
-      req,
-      res
-    ) => {
-      try {
-        const payload =
-          normalizeRequestPayload(
-            req
-          );
-
-        const result =
-          await generateAIResponse({
-            messages:
-              payload.messages,
-
-            task:
-              'workspace_assistant',
-
-            attachments:
-              payload.attachments,
-
-            image:
-              payload.image,
-
-            imageMimeType:
-              payload.imageMimeType,
-
-            file:
-              payload.file,
-          });
-
-        return sendAIResponse(
-          res,
-          result
-        );
-      } catch (error) {
-        return res
-          .status(500)
-          .json({
-            success: false,
-
-            error:
-              error?.message ||
-              'Workspace AI route failed',
-          });
-      }
-    }
-  );
-
-  /*
-   * JOB ASSISTANT
-   */
-  router.post(
-    '/pro/job-assistant',
-    async (
-      req,
-      res
-    ) => {
-      try {
-        const payload =
-          normalizeRequestPayload(
-            req
-          );
-
-        const result =
-          await generateAIResponse({
-            messages:
-              payload.messages,
-
-            task:
-              'job_assistant',
-
-            attachments:
-              payload.attachments,
-          });
-
-        return sendAIResponse(
-          res,
-          result
-        );
-      } catch (error) {
-        return res
-          .status(500)
-          .json({
-            success: false,
-
-            error:
-              error?.message ||
-              'Job Assistant AI route failed',
-          });
-      }
-    }
-  );
-
-  /*
-   * RESUME BUILDER
-   */
-  router.post(
-    '/pro/resume-builder',
-    async (
-      req,
-      res
-    ) => {
-      try {
-        const payload =
-          normalizeRequestPayload(
-            req
-          );
-
-        const result =
-          await generateAIResponse({
-            messages:
-              payload.messages,
-
-            task:
-              'resume_builder',
-
-            attachments:
-              payload.attachments,
-          });
-
-        return sendAIResponse(
-          res,
-          result
-        );
-      } catch (error) {
-        return res
-          .status(500)
-          .json({
-            success: false,
-
-            error:
-              error?.message ||
-              'Resume builder AI route failed',
-          });
-      }
-    }
-  );
-
-  /*
-   * COVER LETTER
-   */
-  router.post(
-    '/pro/cover-letter',
-    async (
-      req,
-      res
-    ) => {
-      try {
-        const payload =
-          normalizeRequestPayload(
-            req
-          );
-
-        const result =
-          await generateAIResponse({
-            messages:
-              payload.messages,
-
-            task:
-              'cover_letter',
-
-            attachments:
-              payload.attachments,
-          });
-
-        return sendAIResponse(
-          res,
-          result
-        );
-      } catch (error) {
-        return res
-          .status(500)
-          .json({
-            success: false,
-
-            error:
-              error?.message ||
-              'Cover letter AI route failed',
-          });
-      }
-    }
-  );
-
-  return router;
-}
-
-/*
-|--------------------------------------------------------------------------
-| Register routes
-|--------------------------------------------------------------------------
-*/
+// -----------------------------------------------------------------------------
+// ROUTE REGISTRATION
+// -----------------------------------------------------------------------------
 
 export function registerAIRoutes(
   app,
   basePath = '/api/ai'
 ) {
-  if (
-    !app ||
-    typeof app.use !==
-      'function'
-  ) {
-    throw new Error(
-      'registerAIRoutes expects an Express app or router.'
-    );
-  }
+  app.use(basePath, router);
 
-  const router =
-    createAIRouter();
-
-  app.use(
-    basePath,
-    router
+  console.log(
+    `[FaceMeX AI] Routes registered at ${basePath}`
   );
-
-  return router;
 }
 
-/*
-|--------------------------------------------------------------------------
-| Public export
-|--------------------------------------------------------------------------
-*/
+// -----------------------------------------------------------------------------
+// DEFAULT EXPORT
+// -----------------------------------------------------------------------------
 
-export const aiRouter = {
-  ROUTES,
-
-  PROVIDER_ORDER:
-    DEFAULT_PROVIDER_ORDER,
-
-  generateAIResponse,
-
-  createAIRouter,
-
-  registerAIRoutes,
-};
-
-const defaultAIRouter =
-  expressModule
-    ? createAIRouter()
-    : null;
-
-export default
-  defaultAIRouter ||
-  aiRouter;
+export default router;
