@@ -1,10 +1,7 @@
 import { createRequire } from 'node:module';
 
-const PROVIDER_ORDER = ['groq', 'cerebras', 'openrouter', 'deepseek'];
-const DEFAULT_TIMEOUT_MS = 25000;
-const RETRYABLE_STATUS_CODES = new Set([401, 402, 403, 408, 429, 500, 502, 503, 504]);
-
 const require = createRequire(import.meta.url);
+
 let expressModule = null;
 
 try {
@@ -13,42 +10,116 @@ try {
   expressModule = null;
 }
 
+/*
+|--------------------------------------------------------------------------
+| FaceMeX AI Provider Configuration
+|--------------------------------------------------------------------------
+|
+| Order matters.
+|
+| Gemini -> Groq -> Cerebras -> OpenRouter -> DeepSeek
+|
+| If one provider fails, FaceMeX automatically tries the next one.
+|
+*/
+
+const PROVIDER_ORDER = [
+  'gemini',
+  'groq',
+  'cerebras',
+  'openrouter',
+  'deepseek',
+];
+
+const DEFAULT_TIMEOUT_MS = Number(
+  process.env.AI_TIMEOUT_MS || 25000
+);
+
+/*
+|--------------------------------------------------------------------------
+| Provider configuration
+|--------------------------------------------------------------------------
+*/
+
 function getProviderConfig(provider) {
   switch (provider) {
     case 'gemini':
       return {
         name: 'gemini',
-        model: process.env.GEMINI_MODEL || 'gemini-3.6-flash',
-        endpoint: `https://generativelanguage.googleapis.com/v1beta/models/${process.env.GEMINI_MODEL || 'gemini-3.6-flash'}:generateContent?key=${process.env.GEMINI_API_KEY || ''}`,
+        model:
+          process.env.GEMINI_MODEL ||
+          'gemini-3.6-flash',
+        endpoint:
+          `https://generativelanguage.googleapis.com/v1beta/models/` +
+          `${process.env.GEMINI_MODEL || 'gemini-3.6-flash'}` +
+          `:generateContent?key=${process.env.GEMINI_API_KEY || ''}`,
       };
+
     case 'groq':
       return {
         name: 'groq',
-        model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
-        endpoint: 'https://api.groq.com/openai/v1/chat/completions',
+        model:
+          process.env.GROQ_MODEL ||
+          'llama-3.3-70b-versatile',
+        endpoint:
+          'https://api.groq.com/openai/v1/chat/completions',
       };
+
     case 'cerebras':
       return {
         name: 'cerebras',
-        model: process.env.CEREBRAS_MODEL || 'gpt-oss-120b',
-        endpoint: 'https://api.cerebras.ai/v1/chat/completions',
+        model:
+          process.env.CEREBRAS_MODEL ||
+          'gpt-oss-120b',
+        endpoint:
+          'https://api.cerebras.ai/v1/chat/completions',
       };
+
     case 'openrouter':
       return {
         name: 'openrouter',
-        model: process.env.OPENROUTER_MODEL || 'meta-llama/llama-3.1-8b-instruct',
-        endpoint: 'https://openrouter.ai/api/v1/chat/completions',
+        model:
+          process.env.OPENROUTER_MODEL ||
+          'meta-llama/llama-3.1-8b-instruct',
+        endpoint:
+          'https://openrouter.ai/api/v1/chat/completions',
       };
+
     case 'deepseek':
       return {
         name: 'deepseek',
-        model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-        endpoint: 'https://api.deepseek.com/v1/chat/completions',
+        model:
+          process.env.DEEPSEEK_MODEL ||
+          'deepseek-chat',
+        endpoint:
+          'https://api.deepseek.com/v1/chat/completions',
       };
+
     default:
-      throw new Error(`Unsupported provider: ${provider}`);
+      throw new Error(
+        `Unsupported provider: ${provider}`
+      );
   }
 }
+
+/*
+|--------------------------------------------------------------------------
+| Environment key lookup
+|--------------------------------------------------------------------------
+*/
+
+function getProviderKey(provider) {
+  const envName =
+    `${provider.toUpperCase()}_API_KEY`;
+
+  return process.env[envName] || '';
+}
+
+/*
+|--------------------------------------------------------------------------
+| Message normalization
+|--------------------------------------------------------------------------
+*/
 
 function normalizeMessages(messages = []) {
   if (!Array.isArray(messages)) {
@@ -56,26 +127,83 @@ function normalizeMessages(messages = []) {
   }
 
   return messages
-    .filter((message) => message && typeof message === 'object')
-    .map((message) => ({
-      role: message.role === 'assistant' ? 'assistant' : message.role === 'system' ? 'system' : 'user',
-      content: String(message.content || ''),
-    }))
-    .filter((message) => message.content.trim().length > 0);
+    .filter(
+      (message) =>
+        message &&
+        typeof message === 'object'
+    )
+    .map((message) => {
+      let role = 'user';
+
+      if (message.role === 'assistant') {
+        role = 'assistant';
+      }
+
+      if (message.role === 'system') {
+        role = 'system';
+      }
+
+      return {
+        role,
+        content: String(
+          message.content ?? ''
+        ).trim(),
+      };
+    })
+    .filter(
+      (message) =>
+        message.content.length > 0
+    );
 }
 
-function createAbortController(timeoutMs = DEFAULT_TIMEOUT_MS) {
+/*
+|--------------------------------------------------------------------------
+| Abort / timeout
+|--------------------------------------------------------------------------
+*/
+
+function createAbortController(
+  timeoutMs = DEFAULT_TIMEOUT_MS
+) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  return { controller, timer };
+
+  const timer = setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+
+  return {
+    controller,
+    timer,
+  };
 }
+
+/*
+|--------------------------------------------------------------------------
+| Extract response text
+|--------------------------------------------------------------------------
+*/
 
 function extractAnswer(payload, provider) {
+  /*
+   * Gemini
+   */
   if (provider === 'gemini') {
-    const candidates = payload?.candidates || [];
-    const parts = candidates[0]?.content?.parts || [];
+    const candidates =
+      Array.isArray(payload?.candidates)
+        ? payload.candidates
+        : [];
+
+    const parts =
+      candidates[0]?.content?.parts || [];
+
     const text = parts
-      .map((part) => part?.text || '')
+      .map((part) => {
+        if (typeof part?.text === 'string') {
+          return part.text;
+        }
+
+        return '';
+      })
       .join('')
       .trim();
 
@@ -84,15 +212,31 @@ function extractAnswer(payload, provider) {
     }
   }
 
-  const text = payload?.choices?.[0]?.message?.content || payload?.output?.text || payload?.text || '';
+  /*
+   * OpenAI-compatible providers
+   */
+  const choiceContent =
+    payload?.choices?.[0]?.message?.content;
 
-  if (typeof text === 'string' && text.trim()) {
-    return text.trim();
+  if (
+    typeof choiceContent === 'string' &&
+    choiceContent.trim()
+  ) {
+    return choiceContent.trim();
   }
 
-  if (Array.isArray(text)) {
-    const joined = text
-      .map((part) => typeof part === 'string' ? part : part?.text || '')
+  /*
+   * Some providers may return content arrays.
+   */
+  if (Array.isArray(choiceContent)) {
+    const joined = choiceContent
+      .map((part) => {
+        if (typeof part === 'string') {
+          return part;
+        }
+
+        return part?.text || '';
+      })
       .join('')
       .trim();
 
@@ -101,238 +245,525 @@ function extractAnswer(payload, provider) {
     }
   }
 
+  /*
+   * Generic fallback
+   */
+  const fallback =
+    payload?.output?.text ||
+    payload?.text ||
+    '';
+
+  if (
+    typeof fallback === 'string' &&
+    fallback.trim()
+  ) {
+    return fallback.trim();
+  }
+
   return '';
 }
 
+/*
+|--------------------------------------------------------------------------
+| Authentication headers
+|--------------------------------------------------------------------------
+*/
+
 function getProviderAuthHeaders(provider) {
+  const key = getProviderKey(provider);
+
   switch (provider) {
     case 'gemini':
       return {};
+
     case 'groq':
-      return {
-        Authorization: `Bearer ${process.env.GROQ_API_KEY || ''}`,
-      };
     case 'cerebras':
-      return {
-        Authorization: `Bearer ${process.env.CEREBRAS_API_KEY || ''}`,
-      };
     case 'openrouter':
-      return {
-        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY || ''}`,
-      };
     case 'deepseek':
       return {
-        Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY || ''}`,
+        Authorization: `Bearer ${key}`,
       };
+
     default:
       return {};
   }
 }
 
-function buildProviderPayload(provider, messages, task) {
-  const normalizedMessages = normalizeMessages(messages);
-  const systemMessage = task ? `Task: ${task}` : 'You are FaceMeX AI.';
+/*
+|--------------------------------------------------------------------------
+| System prompt
+|--------------------------------------------------------------------------
+*/
 
+function getSystemPrompt(task = 'general_chat') {
+  return `
+You are FaceMeX AI.
+
+FaceMeX is an education, career and opportunity platform.
+
+Help the user clearly, accurately and practically.
+
+Be concise when the question is simple.
+Explain difficult subjects step by step.
+For education questions, teach rather than simply giving an answer.
+For career questions, provide practical guidance.
+For job-search questions, help the user understand and act on opportunities.
+
+Current task:
+${String(task || 'general_chat')}
+`.trim();
+}
+
+/*
+|--------------------------------------------------------------------------
+| Build provider payload
+|--------------------------------------------------------------------------
+*/
+
+function buildProviderPayload(
+  provider,
+  messages,
+  task
+) {
+  const normalizedMessages =
+    normalizeMessages(messages);
+
+  const systemPrompt =
+    getSystemPrompt(task);
+
+  /*
+   * Gemini
+   */
   if (provider === 'gemini') {
-    const contents = normalizedMessages.map((message) => ({
-      role: message.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: message.content }],
-    }));
+    const contents =
+      normalizedMessages
+        .filter(
+          (message) =>
+            message.role !== 'system'
+        )
+        .map((message) => ({
+          role:
+            message.role === 'assistant'
+              ? 'model'
+              : 'user',
+          parts: [
+            {
+              text: message.content,
+            },
+          ],
+        }));
 
     return {
-      contents: contents.length > 0 ? contents : [{ role: 'user', parts: [{ text: systemMessage }] }],
       systemInstruction: {
-        parts: [{ text: systemMessage }],
+        parts: [
+          {
+            text: systemPrompt,
+          },
+        ],
       },
+
+      contents:
+        contents.length > 0
+          ? contents
+          : [
+              {
+                role: 'user',
+                parts: [
+                  {
+                    text:
+                      'Hello',
+                  },
+                ],
+              },
+            ],
+
       generationConfig: {
         temperature: 0.7,
+        maxOutputTokens: 2048,
       },
     };
   }
 
+  /*
+   * OpenAI-compatible providers
+   */
   const chatMessages = [
     {
       role: 'system',
-      content: systemMessage,
+      content: systemPrompt,
     },
     ...normalizedMessages,
   ];
 
   return {
-    model: getProviderConfig(provider).model,
+    model:
+      getProviderConfig(provider).model,
+
     messages: chatMessages,
+
     temperature: 0.7,
+
+    max_tokens: 2048,
   };
 }
 
-async function callProvider(provider, messages, task) {
-  const config = getProviderConfig(provider);
+/*
+|--------------------------------------------------------------------------
+| Call one provider
+|--------------------------------------------------------------------------
+*/
 
-  if (provider === 'gemini') {
-    if (!process.env.GEMINI_API_KEY) {
-      throw new Error('gemini_key_missing');
-    }
+async function callProvider(
+  provider,
+  messages,
+  task
+) {
+  const config =
+    getProviderConfig(provider);
 
-    const body = buildProviderPayload(provider, messages, task);
-    const { controller, timer } = createAbortController();
+  const providerKey =
+    getProviderKey(provider);
 
-    try {
-      const response = await fetch(config.endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-
-      const data = await response.json().catch(() => ({}));
-
-      if (!response.ok) {
-        const errorMessage = data?.error?.message || `provider_${provider}_failed`;
-        const error = new Error(errorMessage);
-        error.status = response.status;
-        throw error;
-      }
-
-      const content = extractAnswer(data, provider);
-      if (!content) {
-        throw new Error(`provider_${provider}_empty_response`);
-      }
-
-      return {
-        success: true,
-        content,
-        provider,
-      };
-    } catch (error) {
-      if (error?.name === 'AbortError') {
-        const abortError = new Error(`provider_${provider}_timeout`);
-        abortError.status = 408;
-        throw abortError;
-      }
-      throw error;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  const providerKey = process.env[`${provider.toUpperCase()}_API_KEY`];
+  /*
+   * Don't waste time calling providers
+   * that don't have an API key.
+   */
   if (!providerKey) {
-    throw new Error(`${provider}_key_missing`);
+    const error =
+      new Error(
+        `${provider}_key_missing`
+      );
+
+    error.code = 'KEY_MISSING';
+    error.status = 401;
+
+    throw error;
   }
 
-  const body = buildProviderPayload(provider, messages, task);
-  const { controller, timer } = createAbortController();
+  const body =
+    buildProviderPayload(
+      provider,
+      messages,
+      task
+    );
+
+  const {
+    controller,
+    timer,
+  } =
+    createAbortController();
 
   try {
-    const response = await fetch(config.endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...getProviderAuthHeaders(provider),
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
+    const headers = {
+      'Content-Type':
+        'application/json',
 
-    const data = await response.json().catch(() => ({}));
+      ...getProviderAuthHeaders(
+        provider
+      ),
+    };
+
+    /*
+     * OpenRouter likes these headers.
+     * They are harmless to omit if not configured.
+     */
+    if (provider === 'openrouter') {
+      headers['HTTP-Referer'] =
+        process.env.OPENROUTER_SITE_URL ||
+        'https://facemex.online';
+
+      headers['X-Title'] =
+        process.env.OPENROUTER_APP_NAME ||
+        'FaceMeX';
+    }
+
+    const response =
+      await fetch(
+        config.endpoint,
+        {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body),
+          signal:
+            controller.signal,
+        }
+      );
+
+    const rawText =
+      await response.text();
+
+    let data = {};
+
+    try {
+      data =
+        rawText
+          ? JSON.parse(rawText)
+          : {};
+    } catch {
+      data = {
+        raw: rawText,
+      };
+    }
 
     if (!response.ok) {
-      const errorMessage = data?.error?.message || `provider_${provider}_failed`;
-      const error = new Error(errorMessage);
-      error.status = response.status;
+      const errorMessage =
+        data?.error?.message ||
+        data?.message ||
+        data?.error ||
+        rawText ||
+        `provider_${provider}_failed`;
+
+      const error =
+        new Error(
+          String(errorMessage)
+        );
+
+      error.status =
+        response.status;
+
+      error.provider =
+        provider;
+
       throw error;
     }
 
-    const content = extractAnswer(data, provider);
+    const content =
+      extractAnswer(
+        data,
+        provider
+      );
+
     if (!content) {
-      throw new Error(`provider_${provider}_empty_response`);
+      const error =
+        new Error(
+          `provider_${provider}_empty_response`
+        );
+
+      error.status = 502;
+      error.provider =
+        provider;
+
+      throw error;
     }
 
     return {
       success: true,
-      content,
       provider,
+      model: config.model,
+      content,
+      response: content,
+      text: content,
     };
   } catch (error) {
-    if (error?.name === 'AbortError') {
-      const abortError = new Error(`provider_${provider}_timeout`);
-      abortError.status = 408;
-      throw abortError;
+    if (
+      error?.name ===
+      'AbortError'
+    ) {
+      const timeoutError =
+        new Error(
+          `provider_${provider}_timeout`
+        );
+
+      timeoutError.status = 408;
+      timeoutError.provider =
+        provider;
+
+      throw timeoutError;
     }
+
     throw error;
   } finally {
     clearTimeout(timer);
   }
 }
 
-export function isRetryableFailure(error) {
+/*
+|--------------------------------------------------------------------------
+| Decide whether to try another provider
+|--------------------------------------------------------------------------
+*/
+
+export function isRetryableFailure(
+  error
+) {
   if (!error) {
-    return false;
-  }
-
-  const message = String(error.message || error || '').toLowerCase();
-  const status = Number(error.status || 0);
-
-  if (RETRYABLE_STATUS_CODES.has(status)) {
     return true;
   }
 
+  const status =
+    Number(error.status || 0);
+
+  /*
+   * For FaceMeX fallback architecture,
+   * most provider-side failures should
+   * move to the next provider.
+   */
+
+  const retryableStatuses =
+    new Set([
+      400,
+      401,
+      402,
+      403,
+      408,
+      409,
+      429,
+      500,
+      502,
+      503,
+      504,
+    ]);
+
   if (
-    message.includes('401') ||
-    message.includes('402') ||
-    message.includes('403') ||
-    message.includes('408') ||
-    message.includes('429') ||
-    message.includes('500') ||
-    message.includes('502') ||
-    message.includes('503') ||
-    message.includes('504') ||
-    message.includes('network') ||
-    message.includes('fetch failed') ||
-    message.includes('timeout') ||
-    message.includes('key_missing') ||
-    message.includes('empty_response') ||
-    message.includes('provider_') ||
-    message.includes('insufficient balance') ||
-    message.includes('rate limit') ||
-    message.includes('temporarily unavailable') ||
-    message.includes('failed')
+    retryableStatuses.has(status)
   ) {
     return true;
   }
 
-  return false;
+  const message =
+    String(
+      error.message ||
+      error ||
+      ''
+    ).toLowerCase();
+
+  const retryableWords = [
+    'key_missing',
+    'timeout',
+    'network',
+    'fetch failed',
+    'rate limit',
+    'temporarily unavailable',
+    'empty_response',
+    'insufficient balance',
+    'quota',
+    'overloaded',
+    'provider_',
+    'failed',
+  ];
+
+  return retryableWords.some(
+    (word) =>
+      message.includes(word)
+  );
 }
 
-export async function generateAIResponse(request = {}) {
-  const payload = request?.body || request || {};
-  const rawMessages = Array.isArray(payload.messages)
-    ? payload.messages
-    : [
-        payload.message,
-        payload.prompt,
-        payload.content,
-      ].filter((value) => typeof value === 'string' && value.trim());
+/*
+|--------------------------------------------------------------------------
+| Generate AI response
+|--------------------------------------------------------------------------
+*/
 
-  const messages = normalizeMessages(rawMessages.length > 0 ? rawMessages : []);
-  const task = String(payload.task || payload.prompt || payload.message || 'general_chat').trim();
+export async function generateAIResponse(
+  request = {}
+) {
+  const payload =
+    request?.body ||
+    request ||
+    {};
+
+  let rawMessages = [];
+
+  if (
+    Array.isArray(
+      payload.messages
+    )
+  ) {
+    rawMessages =
+      payload.messages;
+  } else {
+    const singleMessage =
+      payload.message ||
+      payload.prompt ||
+      payload.content;
+
+    if (
+      typeof singleMessage ===
+        'string' &&
+      singleMessage.trim()
+    ) {
+      rawMessages = [
+        {
+          role: 'user',
+          content:
+            singleMessage,
+        },
+      ];
+    }
+  }
+
+  const messages =
+    normalizeMessages(
+      rawMessages
+    );
+
+  /*
+   * If there are no messages,
+   * give the model a harmless default.
+   */
+  if (messages.length === 0) {
+    messages.push({
+      role: 'user',
+      content:
+        'Hello, introduce yourself as FaceMeX AI.',
+    });
+  }
+
+  const task =
+    String(
+      payload.task ||
+      'general_chat'
+    ).trim();
 
   const errors = [];
 
-  for (const provider of PROVIDER_ORDER) {
+  for (
+    const provider
+    of PROVIDER_ORDER
+  ) {
     try {
-      const result = await callProvider(provider, messages, task);
-      return {
-        ...result,
-        response: result?.content || result?.response || '',
-        text: result?.content || result?.response || '',
-      };
-    } catch (error) {
-      const status = error?.status || null;
-      const message = error?.message || 'provider_error';
-      errors.push({ provider, status, message });
+      console.log(
+        `[FaceMeX AI] Trying ${provider}...`
+      );
 
-      if (provider !== PROVIDER_ORDER[PROVIDER_ORDER.length - 1] && isRetryableFailure(error)) {
+      const result =
+        await callProvider(
+          provider,
+          messages,
+          task
+        );
+
+      console.log(
+        `[FaceMeX AI] ${provider} succeeded`
+      );
+
+      return result;
+    } catch (error) {
+      const errorInfo = {
+        provider,
+        status:
+          error?.status ||
+          null,
+        message:
+          error?.message ||
+          'provider_error',
+      };
+
+      errors.push(
+        errorInfo
+      );
+
+      console.error(
+        `[FaceMeX AI] ${provider} failed:`,
+        errorInfo
+      );
+
+      /*
+       * Try next provider.
+       */
+      if (
+        isRetryableFailure(error)
+      ) {
         continue;
       }
 
@@ -342,177 +773,488 @@ export async function generateAIResponse(request = {}) {
 
   return {
     success: false,
-    error: 'AI temporarily unavailable',
+
+    error:
+      'FaceMeX AI is temporarily unavailable.',
+
     provider: null,
+
     details: errors,
   };
 }
 
-function normalizeRequestPayload(req = {}) {
-  const body = req.body || {};
-  const query = req.query || {};
-  const suppliedMessages = body.messages || body.chat || body.conversation || [];
-  const fallbackSingle = body.message || body.prompt || body.content || query.prompt || query.message || '';
+/*
+|--------------------------------------------------------------------------
+| Normalize Express request
+|--------------------------------------------------------------------------
+*/
+
+function normalizeRequestPayload(
+  req = {}
+) {
+  const body =
+    req.body || {};
+
+  const query =
+    req.query || {};
+
+  const suppliedMessages =
+    body.messages ||
+    body.chat ||
+    body.conversation ||
+    [];
+
+  const fallbackSingle =
+    body.message ||
+    body.prompt ||
+    body.content ||
+    query.prompt ||
+    query.message ||
+    '';
 
   return {
-    messages: Array.isArray(suppliedMessages) && suppliedMessages.length > 0
-      ? suppliedMessages
-      : (fallbackSingle ? [{ role: 'user', content: String(fallbackSingle) }] : []),
-    task: body.task || body.prompt || body.message || query.task || query.prompt || query.message || 'general_chat',
-    provider: body.provider || query.provider || null,
+    messages:
+      Array.isArray(
+        suppliedMessages
+      ) &&
+      suppliedMessages.length > 0
+        ? suppliedMessages
+        : fallbackSingle
+          ? [
+              {
+                role: 'user',
+                content:
+                  String(
+                    fallbackSingle
+                  ),
+              },
+            ]
+          : [],
+
+    task:
+      body.task ||
+      query.task ||
+      'general_chat',
+
+    provider:
+      body.provider ||
+      query.provider ||
+      null,
   };
 }
 
-function sendAIResponse(res, result) {
-  if (result.success) {
-    return res.status(200).json({
-      ...result,
-      response: result.content || result.response || '',
-      text: result.content || result.response || '',
-    });
+/*
+|--------------------------------------------------------------------------
+| Send response
+|--------------------------------------------------------------------------
+*/
+
+function sendAIResponse(
+  res,
+  result
+) {
+  if (result?.success) {
+    return res
+      .status(200)
+      .json({
+        success: true,
+        provider:
+          result.provider ||
+          null,
+        model:
+          result.model ||
+          null,
+        content:
+          result.content ||
+          '',
+        response:
+          result.content ||
+          result.response ||
+          '',
+        text:
+          result.content ||
+          result.text ||
+          '',
+      });
   }
 
-  return res.status(502).json(result);
+  return res
+    .status(502)
+    .json({
+      success: false,
+      error:
+        result?.error ||
+        'AI temporarily unavailable',
+      provider: null,
+      details:
+        result?.details ||
+        [],
+    });
 }
+
+/*
+|--------------------------------------------------------------------------
+| Express router
+|--------------------------------------------------------------------------
+*/
 
 export function createAIRouter() {
   if (!expressModule) {
-    throw new Error('createAIRouter requires the Express package to be installed in the backend runtime.');
+    throw new Error(
+      'Express is not installed.'
+    );
   }
 
-  const router = expressModule.Router();
+  const router =
+    expressModule.Router();
 
-  router.get('/health', (req, res) => {
-    res.status(200).json({
-      ok: true,
-      service: 'faceme-ai-router',
-      providers: PROVIDER_ORDER,
-    });
-  });
+  /*
+   * Health
+   */
+  router.get(
+    '/health',
+    (req, res) => {
+      const providers =
+        PROVIDER_ORDER.map(
+          (provider) => ({
+            provider,
+            configured:
+              Boolean(
+                getProviderKey(
+                  provider
+                )
+              ),
+            model:
+              getProviderConfig(
+                provider
+              ).model,
+          })
+        );
 
-  router.get('/test', async (req, res) => {
-    try {
-      const result = await generateAIResponse({
-        task: 'test',
-        messages: [{ role: 'user', content: 'Reply with a short confirmation that the AI router is healthy.' }],
-      });
-      return sendAIResponse(res, result);
-    } catch (error) {
-      return res.status(500).json({
-        success: false,
-        error: error.message || 'AI test failed',
+      res.status(200).json({
+        ok: true,
+        service:
+          'facemex-ai-router',
+        providers,
       });
     }
-  });
+  );
 
-  router.post('/reply', async (req, res) => {
-    try {
-      const payload = normalizeRequestPayload(req);
-      const result = await generateAIResponse({
-        messages: payload.messages,
-        task: payload.task,
-      });
-      return sendAIResponse(res, result);
-    } catch (error) {
-      return res.status(500).json({
-        success: false,
-        error: error.message || 'AI reply failed',
-      });
-    }
-  });
+  /*
+   * Simple GET test
+   */
+  router.get(
+    '/test',
+    async (req, res) => {
+      try {
+        const result =
+          await generateAIResponse({
+            task:
+              'health_check',
+            messages: [
+              {
+                role: 'user',
+                content:
+                  'Reply with exactly: FaceMeX AI is working.',
+              },
+            ],
+          });
 
-  router.post('/deepseek', async (req, res) => {
-    try {
-      const payload = normalizeRequestPayload(req);
-      const result = await generateAIResponse({
-        messages: payload.messages,
-        task: payload.task,
-      });
-      return sendAIResponse(res, result);
-    } catch (error) {
-      return res.status(500).json({
-        success: false,
-        error: error.message || 'DeepSeek route failed',
-      });
+        return sendAIResponse(
+          res,
+          result
+        );
+      } catch (error) {
+        return res
+          .status(500)
+          .json({
+            success: false,
+            error:
+              error?.message ||
+              'AI test failed',
+          });
+      }
     }
-  });
+  );
 
-  router.post('/workspace', async (req, res) => {
-    try {
-      const payload = normalizeRequestPayload(req);
-      const result = await generateAIResponse({
-        messages: payload.messages,
-        task: payload.task,
-      });
-      return sendAIResponse(res, result);
-    } catch (error) {
-      return res.status(500).json({
-        success: false,
-        error: error.message || 'Workspace AI route failed',
-      });
-    }
-  });
+  /*
+   * MAIN AI ENDPOINT
+   */
+  router.post(
+    '/reply',
+    async (req, res) => {
+      try {
+        const payload =
+          normalizeRequestPayload(
+            req
+          );
 
-  router.post('/pro/job-assistant', async (req, res) => {
-    try {
-      const payload = normalizeRequestPayload(req);
-      const result = await generateAIResponse({
-        messages: payload.messages,
-        task: payload.task || 'job_assistant_chat',
-      });
-      return sendAIResponse(res, result);
-    } catch (error) {
-      return res.status(500).json({
-        success: false,
-        error: error.message || 'Job Assistant AI route failed',
-      });
-    }
-  });
+        console.log(
+          '[FaceMeX AI] /reply request:',
+          {
+            messageCount:
+              payload.messages
+                .length,
+            task:
+              payload.task,
+          }
+        );
 
-  router.post('/pro/resume-builder', async (req, res) => {
-    try {
-      const payload = normalizeRequestPayload(req);
-      const result = await generateAIResponse({
-        messages: payload.messages,
-        task: payload.task || 'resume_builder',
-      });
-      return sendAIResponse(res, result);
-    } catch (error) {
-      return res.status(500).json({
-        success: false,
-        error: error.message || 'Resume builder AI route failed',
-      });
-    }
-  });
+        const result =
+          await generateAIResponse({
+            messages:
+              payload.messages,
+            task:
+              payload.task,
+          });
 
-  router.post('/pro/cover-letter', async (req, res) => {
-    try {
-      const payload = normalizeRequestPayload(req);
-      const result = await generateAIResponse({
-        messages: payload.messages,
-        task: payload.task || 'cover_letter',
-      });
-      return sendAIResponse(res, result);
-    } catch (error) {
-      return res.status(500).json({
-        success: false,
-        error: error.message || 'Cover letter AI route failed',
-      });
+        return sendAIResponse(
+          res,
+          result
+        );
+      } catch (error) {
+        console.error(
+          '[FaceMeX AI] /reply fatal error:',
+          error
+        );
+
+        return res
+          .status(500)
+          .json({
+            success: false,
+            error:
+              error?.message ||
+              'AI reply failed',
+          });
+      }
     }
-  });
+  );
+
+  /*
+   * DeepSeek-compatible route
+   * Kept for backwards compatibility.
+   */
+  router.post(
+    '/deepseek',
+    async (req, res) => {
+      try {
+        const payload =
+          normalizeRequestPayload(
+            req
+          );
+
+        const result =
+          await generateAIResponse({
+            messages:
+              payload.messages,
+            task:
+              payload.task,
+          });
+
+        return sendAIResponse(
+          res,
+          result
+        );
+      } catch (error) {
+        return res
+          .status(500)
+          .json({
+            success: false,
+            error:
+              error?.message ||
+              'DeepSeek route failed',
+          });
+      }
+    }
+  );
+
+  /*
+   * Workspace
+   */
+  router.post(
+    '/workspace',
+    async (req, res) => {
+      try {
+        const payload =
+          normalizeRequestPayload(
+            req
+          );
+
+        const result =
+          await generateAIResponse({
+            messages:
+              payload.messages,
+            task:
+              payload.task ||
+              'workspace_assistant',
+          });
+
+        return sendAIResponse(
+          res,
+          result
+        );
+      } catch (error) {
+        return res
+          .status(500)
+          .json({
+            success: false,
+            error:
+              error?.message ||
+              'Workspace AI route failed',
+          });
+      }
+    }
+  );
+
+  /*
+   * Job Assistant
+   */
+  router.post(
+    '/pro/job-assistant',
+    async (req, res) => {
+      try {
+        const payload =
+          normalizeRequestPayload(
+            req
+          );
+
+        const result =
+          await generateAIResponse({
+            messages:
+              payload.messages,
+            task:
+              'job_assistant',
+          });
+
+        return sendAIResponse(
+          res,
+          result
+        );
+      } catch (error) {
+        return res
+          .status(500)
+          .json({
+            success: false,
+            error:
+              error?.message ||
+              'Job Assistant AI route failed',
+          });
+      }
+    }
+  );
+
+  /*
+   * Resume Builder
+   */
+  router.post(
+    '/pro/resume-builder',
+    async (req, res) => {
+      try {
+        const payload =
+          normalizeRequestPayload(
+            req
+          );
+
+        const result =
+          await generateAIResponse({
+            messages:
+              payload.messages,
+            task:
+              'resume_builder',
+          });
+
+        return sendAIResponse(
+          res,
+          result
+        );
+      } catch (error) {
+        return res
+          .status(500)
+          .json({
+            success: false,
+            error:
+              error?.message ||
+              'Resume builder AI route failed',
+          });
+      }
+    }
+  );
+
+  /*
+   * Cover Letter
+   */
+  router.post(
+    '/pro/cover-letter',
+    async (req, res) => {
+      try {
+        const payload =
+          normalizeRequestPayload(
+            req
+          );
+
+        const result =
+          await generateAIResponse({
+            messages:
+              payload.messages,
+            task:
+              'cover_letter',
+          });
+
+        return sendAIResponse(
+          res,
+          result
+        );
+      } catch (error) {
+        return res
+          .status(500)
+          .json({
+            success: false,
+            error:
+              error?.message ||
+              'Cover letter AI route failed',
+          });
+      }
+    }
+  );
 
   return router;
 }
 
-export function registerAIRoutes(app, basePath = '/api/ai') {
-  if (!app || typeof app.use !== 'function') {
-    throw new Error('registerAIRoutes expects an Express app or router instance.');
+/*
+|--------------------------------------------------------------------------
+| Register routes
+|--------------------------------------------------------------------------
+*/
+
+export function registerAIRoutes(
+  app,
+  basePath = '/api/ai'
+) {
+  if (
+    !app ||
+    typeof app.use !== 'function'
+  ) {
+    throw new Error(
+      'registerAIRoutes expects an Express app or router.'
+    );
   }
 
-  const router = createAIRouter();
-  app.use(basePath, router);
+  const router =
+    createAIRouter();
+
+  app.use(
+    basePath,
+    router
+  );
+
   return router;
 }
+
+/*
+|--------------------------------------------------------------------------
+| Public export
+|--------------------------------------------------------------------------
+*/
 
 export const aiRouter = {
   PROVIDER_ORDER,
@@ -521,6 +1263,11 @@ export const aiRouter = {
   registerAIRoutes,
 };
 
-const defaultAIRouter = expressModule ? createAIRouter() : null;
+const defaultAIRouter =
+  expressModule
+    ? createAIRouter()
+    : null;
 
-export default defaultAIRouter || aiRouter;
+export default
+  defaultAIRouter ||
+  aiRouter;
