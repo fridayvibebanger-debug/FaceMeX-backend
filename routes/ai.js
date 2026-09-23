@@ -7,14 +7,14 @@ const router = express.Router();
 | FACEMEX AI ROUTER
 |--------------------------------------------------------------------------
 |
-| GENERAL CHAT
+| NORMAL CHAT
 |   Groq -> Gemini -> Cerebras -> OpenRouter -> DeepSeek
 |
-| HOMEWORK / EXPLANATIONS
-|   Gemini -> Groq -> Cerebras -> OpenRouter -> DeepSeek
+| HOMEWORK / LESSON
+|   Groq -> Gemini -> Cerebras -> OpenRouter -> DeepSeek
 |
 | IMAGE ANALYSIS
-|   Gemini Vision
+|   Gemini Vision ONLY
 |
 | JOB SEARCH
 |   Gemini + Google Search
@@ -28,16 +28,14 @@ const router = express.Router();
 |--------------------------------------------------------------------------
 */
 
+
 // ============================================================================
 // PROVIDERS
 // ============================================================================
 
 const PROVIDERS = {
   gemini: {
-    model:
-      process.env.GEMINI_MODEL ||
-      'gemini-3.6-flash',
-
+    model: process.env.GEMINI_MODEL || 'gemini-3.6-flash',
     endpoint:
       'https://generativelanguage.googleapis.com/v1beta/models',
   },
@@ -46,7 +44,6 @@ const PROVIDERS = {
     model:
       process.env.GROQ_MODEL ||
       'llama-3.3-70b-versatile',
-
     endpoint:
       'https://api.groq.com/openai/v1/chat/completions',
   },
@@ -55,7 +52,6 @@ const PROVIDERS = {
     model:
       process.env.CEREBRAS_MODEL ||
       'gpt-oss-120b',
-
     endpoint:
       'https://api.cerebras.ai/v1/chat/completions',
   },
@@ -64,7 +60,6 @@ const PROVIDERS = {
     model:
       process.env.OPENROUTER_MODEL ||
       'meta-llama/llama-3.1-8b-instruct',
-
     endpoint:
       'https://openrouter.ai/api/v1/chat/completions',
   },
@@ -73,11 +68,11 @@ const PROVIDERS = {
     model:
       process.env.DEEPSEEK_MODEL ||
       'deepseek-chat',
-
     endpoint:
       'https://api.deepseek.com/chat/completions',
   },
 };
+
 
 // ============================================================================
 // API KEYS
@@ -95,41 +90,54 @@ function getApiKey(provider) {
   return keys[provider];
 }
 
+
 // ============================================================================
-// SYSTEM PROMPT
+// SYSTEM PROMPTS
 // ============================================================================
 
-function getSystemPrompt(task) {
+function getSystemPrompt(task = 'general_chat') {
   const base = `
 You are FaceMeX AI.
 
 FaceMeX is an AI education, career, jobs and opportunity platform.
 
-Be useful, direct and practical.
+Be useful, direct, practical and concise.
 
 Rules:
+
+- Answer the user's actual question.
 - Do not invent facts.
 - Do not invent jobs.
 - Do not invent employers.
 - Do not invent application links.
-- If you are uncertain, say so.
+- If information is missing, say so.
 - Use simple language when possible.
-- Answer the user's actual question.
 `;
 
   const prompts = {
+
     general_chat: `
-You are handling general conversation.
+You are handling normal conversation.
+
 Answer naturally and efficiently.
 `,
 
     homework: `
 Help the learner understand the problem.
-Explain the reasoning and steps.
+
+Explain the reasoning clearly.
+Show steps when useful.
+Do not simply give unexplained answers.
 `,
 
     lesson_explanation: `
-Explain educational material clearly using simple examples.
+You are helping a learner understand lesson material.
+
+Use the lesson material supplied by the user.
+
+Explain difficult concepts in simple language.
+
+Do not invent lesson content that was not supplied.
 `,
 
     workspace: `
@@ -137,64 +145,63 @@ Help the user write, plan, organize, summarize and solve tasks.
 `,
 
     job_assistant: `
-Help with CVs, applications, interviews and career preparation.
+Help the user with CVs, applications, interviews and career preparation.
+Only use information supplied by the user.
 `,
 
     job_search: `
 You are FaceMeX's live job-search assistant.
 
-Use Google Search to find CURRENT job opportunities.
+Use Google Search to find current job opportunities.
 
-Only report jobs that you can find from real web sources.
+Only report jobs that you can actually find from web sources.
 
-For each job, try to provide:
+For each job, provide when available:
+
 - Job title
 - Employer
 - Location
-- Closing date if available
+- Closing date
+- Posting date
 - Source
 - Application URL
-- Posting date if available
 
-Never invent a job or application URL.
-
-Clearly distinguish between:
-- Found on an official employer/government source
-- Found on a legitimate job board
-- Could not verify
+Never invent jobs or URLs.
 `,
 
     job_verification: `
 You are FaceMeX's job-verification assistant.
 
-Use Google Search to investigate the job advertisement or job details.
+Use Google Search to investigate the supplied job.
 
-Look for:
+Check for:
+
 - Official employer website
 - Official careers page
 - Government source
-- Reputable recruitment/job board
-- Matching job title
+- Reputable job board
 - Matching employer
+- Matching job title
 - Matching location
 - Matching closing date
 - Application URL
-- Signs that the advertisement may be suspicious
+- Warning signs
 
-Do NOT guarantee that a job is legitimate.
+Do not guarantee legitimacy.
 
-Use these labels:
+Use:
 
 VERIFIED SOURCE
 LIKELY LEGITIMATE
 NEEDS CAUTION
 COULD NOT VERIFY
 
-Explain the evidence behind the label.
+Explain the evidence.
 `,
 
     current_information: `
 Use Google Search to find current information.
+
 Prefer reliable and primary sources.
 `,
 
@@ -207,15 +214,12 @@ Create a professional, specific cover letter without inventing experience.
 `,
   };
 
-  return (
-    base +
-    (prompts[task] ||
-      prompts.general_chat)
-  ).trim();
+  return `${base}\n\n${prompts[task] || prompts.general_chat}`.trim();
 }
 
+
 // ============================================================================
-// MESSAGE NORMALIZATION
+// NORMALIZE TEXT MESSAGES
 // ============================================================================
 
 function normalizeMessages(body = {}) {
@@ -248,28 +252,23 @@ function normalizeMessages(body = {}) {
   return messages
     .filter(Boolean)
     .map((message) => ({
-      role:
-        ['system', 'user', 'assistant'].includes(
-          message.role
-        )
-          ? message.role
-          : 'user',
+      role: ['system', 'user', 'assistant'].includes(
+        message.role
+      )
+        ? message.role
+        : 'user',
 
       content:
         typeof message.content === 'string'
           ? message.content
-          : JSON.stringify(
-              message.content || ''
-            ),
+          : JSON.stringify(message.content || ''),
     }))
-    .filter(
-      (message) =>
-        message.content.trim()
-    );
+    .filter((message) => message.content.trim());
 }
 
+
 // ============================================================================
-// CONVERT GEMINI MESSAGES
+// GEMINI MESSAGE CONVERSION
 // ============================================================================
 
 function convertForGemini(messages) {
@@ -278,6 +277,7 @@ function convertForGemini(messages) {
   const contents = [];
 
   for (const message of messages) {
+
     if (message.role === 'system') {
       systemInstruction +=
         (systemInstruction ? '\n\n' : '') +
@@ -306,14 +306,12 @@ function convertForGemini(messages) {
   };
 }
 
+
 // ============================================================================
-// CONVERT OPENAI FORMAT
+// OPENAI FORMAT
 // ============================================================================
 
-function convertForOpenAI(
-  messages,
-  systemPrompt
-) {
+function convertForOpenAI(messages, systemPrompt) {
   const output = [];
 
   if (systemPrompt) {
@@ -324,7 +322,10 @@ function convertForOpenAI(
   }
 
   for (const message of messages) {
-    if (message.role === 'system') continue;
+
+    if (message.role === 'system') {
+      continue;
+    }
 
     output.push({
       role: message.role,
@@ -334,6 +335,7 @@ function convertForOpenAI(
 
   return output;
 }
+
 
 // ============================================================================
 // EXTRACT GEMINI TEXT
@@ -353,6 +355,7 @@ function extractGeminiText(data) {
     .join('')
     .trim();
 }
+
 
 // ============================================================================
 // EXTRACT OPENAI TEXT
@@ -381,6 +384,7 @@ function extractOpenAIText(data) {
   return '';
 }
 
+
 // ============================================================================
 // GEMINI TEXT
 // ============================================================================
@@ -390,8 +394,8 @@ async function callGemini({
   task,
   googleSearch = false,
 }) {
-  const apiKey =
-    getApiKey('gemini');
+
+  const apiKey = getApiKey('gemini');
 
   if (!apiKey) {
     throw new Error(
@@ -399,8 +403,7 @@ async function callGemini({
     );
   }
 
-  const config =
-    PROVIDERS.gemini;
+  const config = PROVIDERS.gemini;
 
   const converted =
     convertForGemini(messages);
@@ -408,13 +411,12 @@ async function callGemini({
   const systemPrompt =
     getSystemPrompt(task);
 
-  const combinedSystem =
-    [
-      systemPrompt,
-      converted.systemInstruction,
-    ]
-      .filter(Boolean)
-      .join('\n\n');
+  const combinedSystem = [
+    systemPrompt,
+    converted.systemInstruction,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
 
   const payload = {
     systemInstruction: {
@@ -444,15 +446,10 @@ async function callGemini({
         googleSearch ? 0.2 : 0.7,
 
       maxOutputTokens:
-        googleSearch ? 4000 : 2048,
+        googleSearch ? 3000 : 2048,
     },
   };
 
-  /*
-   * IMPORTANT:
-   * Google Search is ONLY enabled for tasks
-   * that actually need live web information.
-   */
   if (googleSearch) {
     payload.tools = [
       {
@@ -462,32 +459,31 @@ async function callGemini({
   }
 
   const url =
-    `${config.endpoint}/` +
-    `${config.model}:generateContent`;
+    `${config.endpoint}/${config.model}:generateContent`;
 
   console.log(
-    `[FaceMeX AI] Gemini ${googleSearch ? '+ Google Search' : ''}`
+    `[FaceMeX AI] Gemini ${
+      googleSearch
+        ? '+ Google Search'
+        : ''
+    }`
   );
 
-  const response =
-    await fetch(url, {
-      method: 'POST',
+  const response = await fetch(url, {
+    method: 'POST',
 
-      headers: {
-        'Content-Type':
-          'application/json',
+    headers: {
+      'Content-Type':
+        'application/json',
 
-        'x-goog-api-key':
-          apiKey,
-      },
+      'x-goog-api-key':
+        apiKey,
+    },
 
-      body: JSON.stringify(
-        payload
-      ),
-    });
+    body: JSON.stringify(payload),
+  });
 
-  const raw =
-    await response.text();
+  const raw = await response.text();
 
   let data;
 
@@ -530,6 +526,7 @@ async function callGemini({
   };
 }
 
+
 // ============================================================================
 // GROQ / CEREBRAS / OPENROUTER / DEEPSEEK
 // ============================================================================
@@ -539,6 +536,7 @@ async function callOpenAIProvider({
   messages,
   task,
 }) {
+
   const apiKey =
     getApiKey(provider);
 
@@ -585,17 +583,14 @@ async function callOpenAIProvider({
     `[FaceMeX AI] Trying ${provider} / ${config.model}`
   );
 
-  const response =
-    await fetch(
-      config.endpoint,
-      {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(
-          payload
-        ),
-      }
-    );
+  const response = await fetch(
+    config.endpoint,
+    {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+    }
+  );
 
   const raw =
     await response.text();
@@ -637,14 +632,16 @@ async function callOpenAIProvider({
   };
 }
 
+
 // ============================================================================
-// GENERAL CHAT
+// GENERAL / HOMEWORK / LESSON AI
 // ============================================================================
 
 async function generalChat({
   messages,
   task = 'general_chat',
 }) {
+
   const providers = [
     'groq',
     'gemini',
@@ -656,17 +653,22 @@ async function generalChat({
   const errors = [];
 
   for (const provider of providers) {
+
     try {
+
       let result;
 
       if (provider === 'gemini') {
+
         result =
           await callGemini({
             messages,
             task,
             googleSearch: false,
           });
+
       } else {
+
         result =
           await callOpenAIProvider({
             provider,
@@ -693,9 +695,12 @@ async function generalChat({
         text:
           result.text,
 
-        attempted: errors,
+        attempted:
+          errors,
       };
+
     } catch (error) {
+
       console.error(
         `[FaceMeX AI] ${provider} failed:`,
         error.message
@@ -719,14 +724,16 @@ async function generalChat({
   );
 }
 
+
 // ============================================================================
-// LIVE GEMINI SEARCH
+// GEMINI LIVE SEARCH
 // ============================================================================
 
 async function liveGeminiSearch({
   messages,
   task,
 }) {
+
   const result =
     await callGemini({
       messages,
@@ -744,11 +751,14 @@ async function liveGeminiSearch({
       metadata?.groundingChunks
     )
   ) {
+
     for (
       const chunk of
       metadata.groundingChunks
     ) {
+
       if (chunk?.web?.uri) {
+
         sources.push({
           title:
             chunk.web.title ||
@@ -766,13 +776,17 @@ async function liveGeminiSearch({
 
     provider: 'gemini',
 
-    model: result.model,
+    model:
+      result.model,
 
-    content: result.text,
+    content:
+      result.text,
 
-    response: result.text,
+    response:
+      result.text,
 
-    text: result.text,
+    text:
+      result.text,
 
     sources,
 
@@ -781,103 +795,57 @@ async function liveGeminiSearch({
   };
 }
 
-// ============================================================================
-// TASK DETECTION
-// ============================================================================
-
-function detectTask(body) {
-  if (
-    typeof body.task === 'string' &&
-    body.task.trim()
-  ) {
-    return body.task.trim();
-  }
-
-  const text =
-    [
-      body.message,
-      body.prompt,
-      ...(Array.isArray(body.messages)
-        ? body.messages.map(
-            (m) => m?.content || ''
-          )
-        : []),
-    ]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase();
-
-  /*
-   * Job searches should go to Gemini + Google Search.
-   */
-
-  const jobWords = [
-    'job',
-    'jobs',
-    'vacancy',
-    'vacancies',
-    'hiring',
-    'employment',
-    'work opportunity',
-    'careers',
-    'career opportunity',
-    'apply for',
-  ];
-
-  const verificationWords = [
-    'is this job legit',
-    'is this job legitimate',
-    'verify this job',
-    'verify job',
-    'real job',
-    'scam job',
-    'fake job',
-    'legitimate job',
-    'is this vacancy real',
-  ];
-
-  if (
-    verificationWords.some(
-      (word) =>
-        text.includes(word)
-    )
-  ) {
-    return 'job_verification';
-  }
-
-  if (
-    jobWords.some(
-      (word) =>
-        text.includes(word)
-    )
-  ) {
-    return 'job_search';
-  }
-
-  return 'general_chat';
-}
 
 // ============================================================================
-// IMAGE NORMALIZATION
+// IMAGE EXTRACTION
 // ============================================================================
 
-function getImageFromBody(body) {
+function getImageFromBody(body = {}) {
+
   let image =
     body.image ||
     body.imageData ||
     body.imageBase64 ||
-    body.imageUrl ||
-    body.url;
+    body.imageUrl;
 
   let mimeType =
     body.mimeType ||
     body.mime_type ||
     'image/jpeg';
 
+
+  // Frontend may send:
+  //
+  // image: {
+  //   data,
+  //   mimeType,
+  //   name
+  // }
+
+  if (
+    image &&
+    typeof image === 'object'
+  ) {
+
+    mimeType =
+      image.mimeType ||
+      image.mime_type ||
+      mimeType;
+
+    image =
+      image.data ||
+      image.base64 ||
+      image.url;
+  }
+
+
+  // attachment
+
   if (
     !image &&
     body.attachment
   ) {
+
     image =
       body.attachment.data ||
       body.attachment.base64 ||
@@ -889,12 +857,14 @@ function getImageFromBody(body) {
       mimeType;
   }
 
+
+  // attachments array
+
   if (
     !image &&
-    Array.isArray(
-      body.attachments
-    )
+    Array.isArray(body.attachments)
   ) {
+
     const attachment =
       body.attachments.find(
         (item) =>
@@ -904,6 +874,7 @@ function getImageFromBody(body) {
       );
 
     if (attachment) {
+
       image =
         attachment.data ||
         attachment.base64 ||
@@ -916,9 +887,11 @@ function getImageFromBody(body) {
     }
   }
 
+
   if (!image) {
     return null;
   }
+
 
   return {
     image,
@@ -926,23 +899,33 @@ function getImageFromBody(body) {
   };
 }
 
+
 // ============================================================================
-// IMAGE PREPARATION
+// PREPARE IMAGE
 // ============================================================================
 
 async function prepareImage(
   image,
   mimeType
 ) {
-  /*
-   * Data URL
-   */
+
+  if (
+    typeof image !== 'string'
+  ) {
+    throw new Error(
+      'Invalid image format'
+    );
+  }
+
+
+  // Data URL
 
   if (
     image.startsWith(
       'data:image/'
     )
   ) {
+
     const match =
       image.match(
         /^data:(image\/[^;]+);base64,(.+)$/s
@@ -960,18 +943,14 @@ async function prepareImage(
     };
   }
 
-  /*
-   * Remote image URL
-   */
+
+  // Remote URL
 
   if (
-    image.startsWith(
-      'http://'
-    ) ||
-    image.startsWith(
-      'https://'
-    )
+    image.startsWith('http://') ||
+    image.startsWith('https://')
   ) {
+
     const response =
       await fetch(image);
 
@@ -993,18 +972,15 @@ async function prepareImage(
 
     return {
       base64:
-        buffer.toString(
-          'base64'
-        ),
+        buffer.toString('base64'),
 
       mimeType:
         contentType.split(';')[0],
     };
   }
 
-  /*
-   * Raw Base64
-   */
+
+  // Raw base64
 
   return {
     base64:
@@ -1020,15 +996,15 @@ async function prepareImage(
   };
 }
 
+
 // ============================================================================
-// GEMINI IMAGE ANALYSIS
+// GEMINI VISION
 // ============================================================================
 
 async function imageAnalysis(body) {
+
   const input =
-    getImageFromBody(
-      body
-    );
+    getImageFromBody(body);
 
   if (!input) {
     throw new Error(
@@ -1052,30 +1028,38 @@ async function imageAnalysis(body) {
     );
 
   const prompt =
-    body.prompt ||
-    body.message ||
-    `
+    typeof body.prompt === 'string' &&
+    body.prompt.trim()
+      ? body.prompt.trim()
+      : typeof body.message === 'string' &&
+        body.message.trim()
+        ? body.message.trim()
+        : `
 Analyze this image carefully.
 
-If it contains text, read and explain
-the important information.
+If it contains text, read the text accurately.
 
-If it is a job advertisement, extract:
-- employer
-- job title
-- location
-- closing date
-- requirements
-- application method
+Explain the important information.
 
-Do not claim the job is legitimate
-unless it can actually be verified.
-    `.trim();
+If it is a job advertisement, identify:
+
+- Employer
+- Job title
+- Location
+- Closing date
+- Requirements
+- Application method
+
+Do not claim that the job is legitimate merely because it appears in the image.
+
+If something cannot be read or verified, say so.
+`.trim();
 
   const config =
     PROVIDERS.gemini;
 
   const payload = {
+
     contents: [
       {
         role: 'user',
@@ -1100,10 +1084,13 @@ unless it can actually be verified.
 
     generationConfig: {
       temperature: 0.2,
-
       maxOutputTokens: 3000,
     },
   };
+
+  console.log(
+    '[FaceMeX AI] Gemini Vision'
+  );
 
   const response =
     await fetch(
@@ -1119,9 +1106,8 @@ unless it can actually be verified.
             apiKey,
         },
 
-        body: JSON.stringify(
-          payload
-        ),
+        body:
+          JSON.stringify(payload),
       }
     );
 
@@ -1131,7 +1117,10 @@ unless it can actually be verified.
   let data;
 
   try {
-    data = JSON.parse(raw);
+    data =
+      raw
+        ? JSON.parse(raw)
+        : null;
   } catch {
     data = {};
   }
@@ -1170,6 +1159,92 @@ unless it can actually be verified.
   };
 }
 
+
+// ============================================================================
+// TASK DETECTION
+// ============================================================================
+
+function detectTask(body = {}) {
+
+  // Explicit task ALWAYS wins.
+
+  if (
+    typeof body.task === 'string' &&
+    body.task.trim()
+  ) {
+
+    return body.task.trim();
+  }
+
+
+  const text = [
+    body.message,
+    body.prompt,
+
+    ...(Array.isArray(body.messages)
+      ? body.messages.map(
+          (m) => m?.content || ''
+        )
+      : []),
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+
+  const verificationWords = [
+    'is this job legit',
+    'is this job legitimate',
+    'verify this job',
+    'verify job',
+    'real job',
+    'scam job',
+    'fake job',
+    'legitimate job',
+    'is this vacancy real',
+  ];
+
+
+  const jobWords = [
+    'job',
+    'jobs',
+    'vacancy',
+    'vacancies',
+    'hiring',
+    'employment',
+    'work opportunity',
+    'careers',
+    'career opportunity',
+    'apply for',
+  ];
+
+
+  if (
+    verificationWords.some(
+      (word) =>
+        text.includes(word)
+    )
+  ) {
+
+    return 'job_verification';
+  }
+
+
+  if (
+    jobWords.some(
+      (word) =>
+        text.includes(word)
+    )
+  ) {
+
+    return 'job_search';
+  }
+
+
+  return 'general_chat';
+}
+
+
 // ============================================================================
 // HEALTH
 // ============================================================================
@@ -1177,12 +1252,14 @@ unless it can actually be verified.
 router.get(
   '/health',
   (req, res) => {
+
     const providers = {};
 
     for (
       const provider of
       Object.keys(PROVIDERS)
     ) {
+
       providers[provider] = {
         configured:
           Boolean(
@@ -1210,6 +1287,7 @@ router.get(
   }
 );
 
+
 // ============================================================================
 // TEST
 // ============================================================================
@@ -1217,7 +1295,9 @@ router.get(
 router.get(
   '/test',
   async (req, res) => {
+
     try {
+
       const result =
         await generalChat({
           messages: [
@@ -1234,7 +1314,9 @@ router.get(
         });
 
       res.json(result);
+
     } catch (error) {
+
       res.status(500).json({
         success: false,
         error: error.message,
@@ -1243,57 +1325,94 @@ router.get(
   }
 );
 
+
 // ============================================================================
-// GENERAL REPLY
+// MAIN REPLY
 // ============================================================================
 
 router.post(
   '/reply',
   async (req, res) => {
+
     try {
-      const messages =
-        normalizeMessages(
-          req.body
+
+      const body =
+        req.body || {};
+
+
+      // ============================================================
+      // IMAGE MUST BE CHECKED FIRST
+      // ============================================================
+
+      const image =
+        getImageFromBody(body);
+
+      if (image) {
+
+        console.log(
+          '[FaceMeX AI] /reply -> IMAGE -> Gemini Vision'
         );
 
+        const result =
+          await imageAnalysis(body);
+
+        return res.json(result);
+      }
+
+
+      // ============================================================
+      // NORMAL TEXT
+      // ============================================================
+
+      const messages =
+        normalizeMessages(body);
+
       if (!messages.length) {
+
         return res.status(400).json({
           success: false,
+
           error:
             'Please provide a message.',
         });
       }
 
-      const task =
-        detectTask(
-          req.body
-        );
 
-      /*
-       * JOBS -> GEMINI + GOOGLE SEARCH
-       */
+      const task =
+        detectTask(body);
+
+
+      // ============================================================
+      // LIVE WEB TASKS
+      // ============================================================
 
       if (
         task === 'job_search' ||
-        task ===
-          'job_verification' ||
-        task ===
-          'current_information'
+        task === 'job_verification' ||
+        task === 'current_information'
       ) {
+
+        console.log(
+          `[FaceMeX AI] /reply -> ${task} -> Gemini Search`
+        );
+
         const result =
           await liveGeminiSearch({
             messages,
             task,
           });
 
-        return res.json(
-          result
-        );
+        return res.json(result);
       }
 
-      /*
-       * EVERYTHING ELSE -> GROQ FIRST
-       */
+
+      // ============================================================
+      // EVERYTHING ELSE
+      // ============================================================
+
+      console.log(
+        `[FaceMeX AI] /reply -> ${task} -> Groq first`
+      );
 
       const result =
         await generalChat({
@@ -1301,43 +1420,130 @@ router.post(
           task,
         });
 
-      return res.json(
-        result
-      );
+      return res.json(result);
+
     } catch (error) {
+
       console.error(
         '[FaceMeX AI] Reply failed:',
-        error.message
+        error
       );
 
       return res.status(500).json({
+
         success: false,
 
         error:
           error.message,
 
         content: '',
+
         response: '',
+
         text: '',
       });
     }
   }
 );
 
+
 // ============================================================================
-// EXPLICIT JOB SEARCH
+// EXPLICIT IMAGE ROUTES
+// ============================================================================
+
+router.post(
+  '/image-analysis',
+  async (req, res) => {
+
+    try {
+
+      const result =
+        await imageAnalysis(
+          req.body || {}
+        );
+
+      return res.json(result);
+
+    } catch (error) {
+
+      console.error(
+        '[FaceMeX AI] Image analysis failed:',
+        error
+      );
+
+      return res.status(500).json({
+
+        success: false,
+
+        error:
+          error.message,
+
+        content: '',
+
+        response: '',
+
+        text: '',
+      });
+    }
+  }
+);
+
+
+router.post(
+  '/analyze-image',
+  async (req, res) => {
+
+    try {
+
+      const result =
+        await imageAnalysis(
+          req.body || {}
+        );
+
+      return res.json(result);
+
+    } catch (error) {
+
+      console.error(
+        '[FaceMeX AI] Image analysis failed:',
+        error
+      );
+
+      return res.status(500).json({
+
+        success: false,
+
+        error:
+          error.message,
+
+        content: '',
+
+        response: '',
+
+        text: '',
+      });
+    }
+  }
+);
+
+
+// ============================================================================
+// JOB SEARCH
 // ============================================================================
 
 router.post(
   '/job-search',
   async (req, res) => {
+
     try {
+
       const messages =
         normalizeMessages(
           req.body
         );
 
       if (!messages.length) {
+
         return res.status(400).json({
           success: false,
 
@@ -1354,43 +1560,50 @@ router.post(
             'job_search',
         });
 
-      return res.json(
-        result
-      );
+      return res.json(result);
+
     } catch (error) {
+
       console.error(
         '[FaceMeX Jobs] Search failed:',
-        error.message
+        error
       );
 
       return res.status(500).json({
+
         success: false,
 
         error:
           error.message,
 
         content: '',
+
         response: '',
+
         text: '',
       });
     }
   }
 );
 
+
 // ============================================================================
-// EXPLICIT JOB VERIFICATION
+// JOB VERIFICATION
 // ============================================================================
 
 router.post(
   '/job-verification',
   async (req, res) => {
+
     try {
+
       const messages =
         normalizeMessages(
           req.body
         );
 
       if (!messages.length) {
+
         return res.status(400).json({
           success: false,
 
@@ -1407,93 +1620,32 @@ router.post(
             'job_verification',
         });
 
-      return res.json(
-        result
-      );
+      return res.json(result);
+
     } catch (error) {
+
       console.error(
         '[FaceMeX Jobs] Verification failed:',
-        error.message
+        error
       );
 
       return res.status(500).json({
+
         success: false,
 
         error:
           error.message,
 
         content: '',
+
         response: '',
+
         text: '',
       });
     }
   }
 );
 
-// ============================================================================
-// IMAGE ANALYSIS
-// ============================================================================
-
-router.post(
-  '/image-analysis',
-  async (req, res) => {
-    try {
-      const result =
-        await imageAnalysis(
-          req.body || {}
-        );
-
-      res.json(result);
-    } catch (error) {
-      console.error(
-        '[FaceMeX AI] Image analysis failed:',
-        error.message
-      );
-
-      res.status(500).json({
-        success: false,
-
-        error:
-          error.message,
-
-        content: '',
-        response: '',
-        text: '',
-      });
-    }
-  }
-);
-
-// Alias
-router.post(
-  '/analyze-image',
-  async (req, res) => {
-    try {
-      const result =
-        await imageAnalysis(
-          req.body || {}
-        );
-
-      res.json(result);
-    } catch (error) {
-      console.error(
-        '[FaceMeX AI] Image analysis failed:',
-        error.message
-      );
-
-      res.status(500).json({
-        success: false,
-
-        error:
-          error.message,
-
-        content: '',
-        response: '',
-        text: '',
-      });
-    }
-  }
-);
 
 // ============================================================================
 // WORKSPACE
@@ -1502,7 +1654,9 @@ router.post(
 router.post(
   '/workspace',
   async (req, res) => {
+
     try {
+
       const messages =
         normalizeMessages(
           req.body
@@ -1517,7 +1671,9 @@ router.post(
         });
 
       res.json(result);
+
     } catch (error) {
+
       res.status(500).json({
         success: false,
         error: error.message,
@@ -1526,6 +1682,7 @@ router.post(
   }
 );
 
+
 // ============================================================================
 // JOB ASSISTANT
 // ============================================================================
@@ -1533,7 +1690,9 @@ router.post(
 router.post(
   '/pro/job-assistant',
   async (req, res) => {
+
     try {
+
       const messages =
         normalizeMessages(
           req.body
@@ -1548,7 +1707,9 @@ router.post(
         });
 
       res.json(result);
+
     } catch (error) {
+
       res.status(500).json({
         success: false,
         error: error.message,
@@ -1557,6 +1718,7 @@ router.post(
   }
 );
 
+
 // ============================================================================
 // RESUME
 // ============================================================================
@@ -1564,7 +1726,9 @@ router.post(
 router.post(
   '/pro/resume-builder',
   async (req, res) => {
+
     try {
+
       const messages =
         normalizeMessages(
           req.body
@@ -1579,7 +1743,9 @@ router.post(
         });
 
       res.json(result);
+
     } catch (error) {
+
       res.status(500).json({
         success: false,
         error: error.message,
@@ -1588,6 +1754,7 @@ router.post(
   }
 );
 
+
 // ============================================================================
 // COVER LETTER
 // ============================================================================
@@ -1595,7 +1762,9 @@ router.post(
 router.post(
   '/pro/cover-letter',
   async (req, res) => {
+
     try {
+
       const messages =
         normalizeMessages(
           req.body
@@ -1610,7 +1779,9 @@ router.post(
         });
 
       res.json(result);
+
     } catch (error) {
+
       res.status(500).json({
         success: false,
         error: error.message,
@@ -1618,6 +1789,7 @@ router.post(
     }
   }
 );
+
 
 // ============================================================================
 // REGISTER
@@ -1627,6 +1799,7 @@ export function registerAIRoutes(
   app,
   basePath = '/api/ai'
 ) {
+
   app.use(
     basePath,
     router
@@ -1636,5 +1809,6 @@ export function registerAIRoutes(
     `[FaceMeX AI] Routes registered at ${basePath}`
   );
 }
+
 
 export default router;
