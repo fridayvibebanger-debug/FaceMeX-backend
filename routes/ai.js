@@ -156,9 +156,8 @@ const ROUTES = {
   workspace_assistant: [
     'groq',
     'gemini',
-    'cerebras',
     'openrouter',
-    'deepseek',
+    'cerebras',
   ],
 
   health_check: [
@@ -210,6 +209,16 @@ function getProviderConfig(provider, task = 'general_chat') {
        */
       const isVisionTask =
         task === 'image_analysis';
+      const configuredModel =
+        process.env.GROQ_MODEL;
+      const defaultModel =
+        'openai/gpt-oss-120b';
+      const model =
+        !configuredModel ||
+        configuredModel === 'llama-3.1-8b-instant' ||
+        configuredModel === 'llama-3.3-70b-versatile'
+          ? defaultModel
+          : configuredModel;
 
       return {
         name: 'groq',
@@ -220,10 +229,7 @@ function getProviderConfig(provider, task = 'general_chat') {
                 process.env.GROQ_VISION_MODEL ||
                 'qwen/qwen3.8-27b'
               )
-            : (
-                process.env.GROQ_MODEL ||
-                'llama-3.3-70b-versatile'
-              ),
+            : model,
 
         endpoint:
           'https://api.groq.com/openai/v1/chat/completions',
@@ -1589,6 +1595,7 @@ export function isRetryableFailure(
       401,
       402,
       403,
+      404,
       408,
       409,
       429,
@@ -1790,15 +1797,7 @@ export async function generateAIResponse(
         errorInfo
       );
 
-      if (
-        isRetryableFailure(
-          error
-        )
-      ) {
-        continue;
-      }
-
-      break;
+      continue;
     }
   }
 
@@ -2460,3 +2459,4 @@ const defaultAIRouter =
 export default
   defaultAIRouter ||
   aiRouter;
+
