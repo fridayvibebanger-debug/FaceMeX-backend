@@ -36,6 +36,7 @@ import marketplaceRouter from './routes/marketplace.js';
 import azureUploadsRouter from './routes/azureUploads.js';
 import uploadsRouter from './routes/uploads.js';
 import translateRouter from './routes/translate.js';
+import mediaRouter from './routes/media.js';
 import youtubeRouter from './routes/youtube.js';
 
 
@@ -695,6 +696,7 @@ app.use('/api/uploads/azure', azureUploadsRouter);
 app.use('/api/uploads', uploadsRouter);
 
 app.use('/api/translate', translateRouter);
+app.use('/api/media', mediaRouter);
 app.use('/api/youtube', youtubeRouter);
 
 /*

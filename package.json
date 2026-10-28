@@ -6,7 +6,8 @@
   "main": "index.js",
   "scripts": {
     "dev": "node --watch index.js",
-    "start": "node index.js"
+    "start": "node index.js",
+    "test:media": "node --test services/media.test.js"
   },
   "dependencies": {
     "@azure/storage-blob": "^12.27.0",
