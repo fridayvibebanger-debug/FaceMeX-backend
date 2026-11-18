@@ -1,193 +1,112 @@
-import mongoose from 'mongoose';
+import jwt from 'jsonwebtoken';
 import { connectDb } from '../lib/db.js';
+import { User } from '../models/User.js';
 
-function clean(value) {
-  return String(value || '').trim();
+function jwtSecret() {
+  return process.env.JWT_SECRET || 'faceme-dev-secret';
 }
 
-function getBearerToken(req) {
-  const header = clean(req.headers.authorization || req.headers.Authorization);
-
-  if (!header) return '';
-
-  if (header.toLowerCase().startsWith('bearer ')) {
-    return header.slice(7).trim();
-  }
-
-  return header;
+export function signToken(user) {
+  return jwt.sign({ sub: user._id.toString(), email: user.email }, jwtSecret(), { expiresIn: '7d' });
 }
 
-function getSupabaseEnv() {
-  return {
-    url:
-      process.env.SUPABASE_URL ||
-      process.env.VITE_SUPABASE_URL ||
-      '',
-
-    anonKey:
-      process.env.SUPABASE_ANON_KEY ||
-      process.env.VITE_SUPABASE_ANON_KEY ||
-      process.env.SUPABASE_SERVICE_ROLE_KEY ||
-      '',
+export function createHybridAuth({
+  env = process.env,
+  fetchImpl = fetch,
+  localAuth = requireAuth,
+  messages = {},
+} = {}) {
+  const responseMessages = {
+    missing: 'Sign in to continue.',
+    expired: 'Your sign-in has expired. Sign in again.',
+    unavailable: 'Sign-in could not be verified right now. Please try again.',
+    ...messages,
   };
-}
+  return async (req, res, next) => {
+    const token = String(req.headers.authorization || '').match(/^Bearer\s+(\S+)$/i)?.[1] || '';
+    if (!token) {
+      return res.status(401).json({ error: 'unauthorized', message: responseMessages.missing });
+    }
 
-async function getSupabaseUserFromToken(token) {
-  const { url, anonKey } = getSupabaseEnv();
+    const signingSecret = env.JWT_SECRET ||
+      (env.NODE_ENV === 'production' ? '' : 'faceme-dev-secret');
+    let isLocalToken = false;
+    if (signingSecret) {
+      try {
+        jwt.verify(token, signingSecret);
+        isLocalToken = true;
+      } catch {}
+    }
+    if (isLocalToken) {
+      return localAuth(req, res, next);
+    }
 
-  if (!url || !anonKey) {
-    throw new Error('SUPABASE_URL or SUPABASE_ANON_KEY missing on backend');
-  }
+    const supabaseUrl = env.SUPABASE_URL || env.VITE_SUPABASE_URL;
+    const supabaseAnonKey = env.SUPABASE_ANON_KEY || env.VITE_SUPABASE_ANON_KEY;
+    if (!supabaseUrl || !supabaseAnonKey) {
+      return res.status(401).json({ error: 'unauthorized', message: responseMessages.expired });
+    }
 
-  const response = await fetch(`${url.replace(/\/+$/, '')}/auth/v1/user`, {
-    method: 'GET',
-    headers: {
-      apikey: anonKey,
-      Authorization: `Bearer ${token}`,
-    },
-  });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => {
+      const error = new Error('Authentication request timed out.');
+      error.name = 'TimeoutError';
+      controller.abort(error);
+    }, 5_000);
+    timeout.unref?.();
 
-  const data = await response.json().catch(() => null);
-
-  if (!response.ok || !data?.id) {
-    throw new Error('invalid_supabase_token');
-  }
-
-  return data;
-}
-
-function getNameFromSupabaseUser(user) {
-  return clean(
-    user?.user_metadata?.full_name ||
-      user?.user_metadata?.name ||
-      user?.user_metadata?.username ||
-      user?.email ||
-      'FaceMeX user'
-  );
-}
-
-async function findOrCreateMongoUserFromSupabase(supaUser) {
-  await connectDb();
-
-  const supabaseId = clean(supaUser.id);
-  const email = clean(supaUser.email);
-  const name = getNameFromSupabaseUser(supaUser);
-
-  if (!mongoose.connection?.db) {
-    throw new Error('MongoDB not connected');
-  }
-
-  const users = mongoose.connection.collection('users');
-
-  const existing = await users.findOne({
-    $or: [
-      { supabaseId },
-      { supabase_id: supabaseId },
-      { id: supabaseId },
-      ...(email ? [{ email }] : []),
-    ],
-  });
-
-  if (existing?._id) {
-    await users.updateOne(
-      { _id: existing._id },
-      {
-        $set: {
-          supabaseId,
-          supabase_id: supabaseId,
-          id: existing.id || supabaseId,
-          email: existing.email || email,
-          name: existing.name || name,
-          fullName: existing.fullName || name,
-          updatedAt: new Date(),
+    try {
+      const endpoint = new URL('/auth/v1/user', supabaseUrl);
+      const response = await fetchImpl(endpoint, {
+        headers: {
+          apikey: supabaseAnonKey,
+          Authorization: `Bearer ${token}`,
         },
+        signal: controller.signal,
+      });
+      if (response.status === 401 || response.status === 403) {
+        return res.status(401).json({ error: 'unauthorized', message: responseMessages.expired });
       }
-    );
+      if (!response.ok) {
+        return res.status(503).json({ error: 'authentication_unavailable', message: responseMessages.unavailable });
+      }
 
-    return {
-      ...existing,
-      _id: existing._id,
-      id: existing.id || supabaseId,
-      supabaseId,
-      email: existing.email || email,
-      name: existing.name || name,
-      tier: existing.tier || 'free',
-      addons: existing.addons || { verified: false },
-    };
-  }
-
-  const now = new Date();
-
-  const insert = await users.insertOne({
-    supabaseId,
-    supabase_id: supabaseId,
-    id: supabaseId,
-    email,
-    name,
-    fullName: name,
-    avatar: clean(supaUser?.user_metadata?.avatar_url || ''),
-    tier: 'free',
-    subscriptionTier: 'free',
-    subscriptionStatus: 'inactive',
-    addons: {
-      verified: false,
-    },
-    createdAt: now,
-    updatedAt: now,
-  });
-
-  return {
-    _id: insert.insertedId,
-    id: supabaseId,
-    supabaseId,
-    email,
-    name,
-    tier: 'free',
-    addons: { verified: false },
+      const user = await response.json();
+      if (!user || typeof user.id !== 'string') {
+        return res.status(401).json({ error: 'unauthorized', message: responseMessages.missing });
+      }
+      req.user = {
+        _id: user.id,
+        id: user.id,
+        email: user.email || '',
+        name: user.user_metadata?.full_name || user.user_metadata?.name || '',
+      };
+      return next();
+    } catch {
+      return res.status(503).json({
+        error: 'authentication_unavailable',
+        message: responseMessages.unavailable,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
   };
 }
 
 export async function requireAuth(req, res, next) {
   try {
-    const token = getBearerToken(req);
+    const header = req.headers.authorization || '';
+    const [, token] = header.split(' ');
+    if (!token) return res.status(401).json({ error: 'unauthorized' });
 
-    if (!token) {
-      return res.status(401).json({
-        ok: false,
-        error: 'unauthorized',
-        message: 'Missing login token.',
-      });
-    }
+    const payload = jwt.verify(token, jwtSecret());
+    await connectDb();
+    const user = await User.findById(payload.sub).lean();
+    if (!user) return res.status(401).json({ error: 'unauthorized' });
 
-    const supaUser = await getSupabaseUserFromToken(token);
-    const mongoUser = await findOrCreateMongoUserFromSupabase(supaUser);
-
-    req.user = {
-      _id: mongoUser._id,
-      id: mongoUser.id || supaUser.id,
-      supabaseId: supaUser.id,
-      email: mongoUser.email || supaUser.email || '',
-      name: mongoUser.name || getNameFromSupabaseUser(supaUser),
-      tier: mongoUser.tier || 'free',
-      addons: mongoUser.addons || { verified: false },
-    };
-
-    return next();
+    req.user = user;
+    next();
   } catch (err) {
-    console.error('requireAuth error:', err?.message || err);
-
-    return res.status(401).json({
-      ok: false,
-      error: 'unauthorized',
-      message: err?.message || 'Unauthorized',
-    });
-  }
-}
-
-export function optionalAuth(req, _res, next) {
-  try {
-    return next();
-  } catch {
-    return next();
+    return res.status(401).json({ error: 'unauthorized' });
   }
 }
