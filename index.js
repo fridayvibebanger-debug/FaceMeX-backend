@@ -33,6 +33,7 @@ import marketplaceRouter from './routes/marketplace.js';
 import mediaRouter from './routes/media.js';
 import youtubeRouter from './routes/youtube.js';
 import voiceRouter from './routes/voice.js';
+import emailRouter from './routes/email.js';
 
 // Load environment variables from common locations.
 // We prefer repo-root .env.local, then repo-root .env, then server/.env.
@@ -160,6 +161,7 @@ app.use('/api/marketplace', marketplaceRouter);
 app.use('/api/media', mediaRouter);
 app.use('/api/youtube', youtubeRouter);
 app.use('/api/voice', voiceRouter);
+app.use('/api/email', emailRouter);
 
 // In-memory presence: worldId -> Map<userId, { user: any, avatar: any, socketIds: Set<string> }>
 const worldPresence = new Map();
