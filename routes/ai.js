@@ -1816,6 +1816,26 @@ export async function generateAIResponse(
   };
 }
 
+export async function generateEmailAssistantText(prompt) {
+  const result = await generateAIResponse({
+    messages: [
+      {
+        role: 'system',
+        content: 'You are FaceMeX Email Assistant. Follow the user instructions and return only the requested JSON object.',
+      },
+      { role: 'user', content: prompt },
+    ],
+  });
+
+  if (!result?.success || typeof result.content !== 'string' || !result.content.trim()) {
+    const error = new Error('The email draft could not be generated.');
+    error.code = 'ai_generation_failed';
+    throw error;
+  }
+
+  return result.content.trim();
+}
+
 /*
 |--------------------------------------------------------------------------
 | Express request normalization

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { randomBytes } from 'node:crypto';
-import { createHybridAuth } from '../middleware/auth.js';
+import { requireAuth } from '../middleware/auth.js';
 import { connectDb, mongoose } from '../lib/db.js';
 import { EmailOAuthState } from '../models/EmailOAuthState.js';
 import { EmailSend } from '../models/EmailSend.js';
@@ -35,6 +35,12 @@ function userId(req) {
 function publicError(error) {
   if (error instanceof EmailAssistantError) {
     return { statusCode: error.statusCode, body: { error: error.code, message: error.message } };
+  }
+  if (error?.code === 'ai_generation_failed') {
+    return {
+      statusCode: 502,
+      body: { error: error.code, message: 'The email draft could not be generated.' },
+    };
   }
   console.error('FaceMeX email assistant request failed', {
     errorName: error instanceof Error ? error.name : 'UnknownError',
@@ -155,15 +161,7 @@ export function createEmailRouter({
   connectionModel = GmailConnection,
   sendModel = EmailSend,
   generateDraft = generateEmailAssistantText,
-  authMiddleware = createHybridAuth({
-    env,
-    fetchImpl,
-    messages: {
-      missing: 'Sign in to use the email assistant.',
-      expired: 'Your FaceMeX sign-in has expired. Sign in again.',
-      unavailable: 'FaceMeX authentication is temporarily unavailable.',
-    },
-  }),
+  authMiddleware = requireAuth,
   now = Date.now,
   randomBytesImpl = randomBytes,
 } = {}) {
